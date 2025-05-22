@@ -241,6 +241,12 @@ class MoondreamREPL:
     def exit(self, args: List[str] = None):
         """Exit the REPL."""
         print("Exiting Moondream CLI...")
+        if self.attached_station:
+            # When running inside Moondream Station, also stop the hypervisor
+            try:
+                self.cli.shutdown()
+            except Exception:
+                pass
         self.running = False
 
     def caption(self, args: List[str]):

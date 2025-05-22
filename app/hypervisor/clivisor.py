@@ -25,7 +25,8 @@ class CLIVisor:
         self.config = config
         self.manifest = manifest
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        logger.debug(f"clivisor initialized")
+        self.cli_process = None
+        logger.debug("clivisor initialized")
 
     def boot(self):
         """
@@ -95,6 +96,23 @@ class CLIVisor:
 
         logger.debug(f"CLI process started with PID {process.pid}")
         self.cli_process = process
+
+    def _kill_process(self):
+        """Terminate the CLI subprocess if it is running."""
+        if self.cli_process and self.cli_process.poll() is None:
+            logger.info("Terminating CLI process")
+            try:
+                self.cli_process.terminate()
+                self.cli_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.debug("CLI process did not terminate gracefully; killing")
+                self.cli_process.kill()
+            finally:
+                self.cli_process = None
+
+    def shutdown(self):
+        """Shutdown the CLI if it was launched by the hypervisor."""
+        self._kill_process()
 
     def check_for_update(self, update_manifest: bool = True) -> dict:
         """
