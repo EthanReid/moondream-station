@@ -14,9 +14,9 @@ from textual.widgets import (
     Button,
     Select,
     Label,
-    RichLog,
     LoadingIndicator,
     Input,
+    RichLog,
 )
 from textual.screen import Screen
 from textual.message import Message
@@ -35,25 +35,44 @@ class KeyLogger(RichLog):
 
 class CaptionInput(Static):
     def compose(self):
-        yield Input(placeholder="Image Path", id="image_path_field")
+        with Horizontal():
+            yield Button("Submit", id="submit_button", variant="success")
+            yield Input(placeholder="Image Path", id="image_path_field")
 
 
 class QueryInput(Static):
     def compose(self):
         yield Input(placeholder="Image Path", id="image_path_field")
-        yield Input(placeholder="Prompt", id="prompt_field")
+        with Horizontal():
+            yield Button("Submit", id="submit_button", variant="success")
+            yield Input(placeholder="Prompt", id="prompt_field")
 
 
 class DetectInput(Static):
     def compose(self):
         yield Input(placeholder="Image Path", id="image_path_field")
-        yield Input(placeholder="Detect", id="prompt_field")
+        with Horizontal():
+            yield Button("Submit", id="submit_button", variant="success")
+            yield Input(placeholder="Detect", id="prompt_field")
 
 
 class PointInput(Static):
     def compose(self):
         yield Input(placeholder="Image Path", id="image_path_field")
-        yield Input(placeholder="Point", id="prompt_field")
+        with Horizontal():
+            yield Button("Submit", id="submit_button", variant="success")
+            yield Input(placeholder="Point", id="prompt_field")
+
+
+class ResponseCard(Static):
+    """Simple container used to display inference results."""
+
+    def __init__(self, text: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.text = text
+
+    def on_mount(self) -> None:
+        self.update(self.text)
 
 
 class Infer(Static):
@@ -69,11 +88,9 @@ class Infer(Static):
                 yield Button("Query", id="query_button")
                 yield Button("Detect", id="detect_button")
                 yield Button("Point", id="point_button")
-            yield Container(id="capibility_input_container")
-            with Horizontal(id="submit_row"):
-                yield Button("Submit", id="submit_button", variant="success")
+            with ScrollableContainer(id="response_container"):
                 yield LoadingIndicator(id="loading_indicator")
-            yield RichLog(id="response_log", highlight=False)
+            yield Container(id="capibility_input_container", classes="bottom")
 
     def on_mount(self) -> None:
         """Mount the default input on start so layout positions correctly."""
@@ -165,11 +182,11 @@ class Infer(Static):
         worker = self._run_inference(self.mode, image_path, prompt_value)
         result = await worker.wait()
         loader.display = False
-        log = self.query_one("#response_log", RichLog)
+
+        container = self.query_one("#response_container", ScrollableContainer)
         if result:
-            for line in result.strip().splitlines():
-                log.write(line)
-            log.write("")
+            container.mount(ResponseCard(result, classes="response-card"), before=loader)
+        container.scroll_end(animate=False)
 
 
 class MainPanel(Static):
