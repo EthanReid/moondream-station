@@ -61,8 +61,12 @@ class Infer(Static):
             yield Button("Query", id="query_button")
             yield Button("Detect", id="detect_button")
             yield Button("Point", id="point_button")
-        with Container(id="capibility_input_container", classes="bottom"):
-            yield Horizontal(CaptionInput())
+        yield Container(id="capibility_input_container", classes="bottom")
+
+    def on_mount(self) -> None:
+        """Mount the default input on start so layout positions correctly."""
+        input_container = self.query_one("#capibility_input_container")
+        input_container.mount(CaptionInput())
 
     @on(Button.Pressed, "#caption_button")
     def handle_caption_button(self, event: Button.Pressed) -> None:
