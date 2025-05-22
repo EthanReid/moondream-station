@@ -27,3 +27,15 @@ MoondreamCLI {
     align-vertical: bottom;
 }
 
+#response_container {
+    height: 10;
+    overflow-y: auto;
+    margin-bottom: 1;
+}
+
+.response-card {
+    border: round $secondary;
+    padding: 1;
+    margin-bottom: 1;
+}
+
