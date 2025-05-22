@@ -1,9 +1,11 @@
 import sys
 import time
 import requests
+import os
+import shutil
 from typing import Dict, Any, Optional
 
-from moondream_cli.utils.helpers import create_spinner, run_spinner
+from moondream_cli.utils.helpers import create_spinner, run_spinner, check_platform
 
 
 class AdminCommands:
@@ -348,8 +350,28 @@ class AdminCommands:
             else:
                 print("CLI update initiated successfully.")
 
+            if check_platform() == "ubuntu":
+                new_cli = shutil.which("moondream") or os.path.expanduser(
+                    "~/.local/bin/moondream"
+                )
+                if new_cli and os.path.isfile(new_cli):
+                    print("Restarting CLI with updated version...")
+                    os.execv(new_cli, [new_cli] + sys.argv[1:])
+                else:
+                    print(
+                        "⚠️ CLI update complete. Please restart the CLI to use the updated version."
+                    )
+
         except requests.exceptions.ConnectionError:
             print("Update initiated. CLI is updating...")
+            if check_platform() == "ubuntu":
+                new_cli = shutil.which("moondream") or os.path.expanduser(
+                    "~/.local/bin/moondream"
+                )
+                if new_cli and os.path.isfile(new_cli):
+                    os.execv(new_cli, [new_cli] + sys.argv[1:])
+                else:
+                    pass
         except Exception as e:
             print(f"Error initiating CLI update: {e}")
 
