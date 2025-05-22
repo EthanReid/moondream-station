@@ -23,7 +23,25 @@ MoondreamCLI {
     width:100%;
 }
 
-.bottom {
-    align-vertical: bottom;
+
+#infer_layout {
+    height: 100%;
+}
+
+#capibility_input_container {
+    dock: bottom;
+    padding-top: 1;
+}
+
+#response_container {
+    height: 1fr;
+    overflow-y: auto;
+    margin-bottom: 1;
+}
+
+.response-card {
+    border: round $secondary;
+    padding: 1;
+    margin-bottom: 1;
 }
 
