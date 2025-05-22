@@ -21,6 +21,7 @@ from textual.screen import Screen
 from textual.message import Message
 
 from cli import HypervisorCLI
+from config import Config
 
 
 class KeyLogger(RichLog):
@@ -112,10 +113,22 @@ class Infer(Static):
         input_container.mount(PointInput())
 
 
-class MainPannel(Static):
+class MainPanel(Static):
     def compose(self):
-        with Vertical(id="infer_vertical_section"):
-            yield Infer(id="infer_panel")
+        yield Infer(id="infer_panel")
+
+
+class LogsPanel(Static):
+    def compose(self):
+        yield KeyLogger(id="logs_view")
+
+
+class SettingsPanel(Static):
+    def compose(self):
+        cfg = Config()
+        with ScrollableContainer(id="settings_container"):
+            for key, value in cfg.core_config.items():
+                yield Label(f"{key}: {value}")
 
 
 class MoondreamCLI(App):
@@ -127,10 +140,37 @@ class MoondreamCLI(App):
 
         with Horizontal(id="main-layout"):
             with Vertical(id="sidebar"):
-                yield Button("💬 Infer", id="infer_button")
+                yield Button("💬 Infer", id="infer_button", variant="primary")
                 yield Button("🗄️  Logs", id="logs_button")
                 yield Button("⚙️  Setting", id="setting_button")
-            yield MainPannel(id="main_panel")
+            yield MainPanel(id="main_panel")
+
+    @on(Button.Pressed, "#infer_button")
+    def show_infer(self, event: Button.Pressed) -> None:
+        self.query_one("#infer_button").variant = "primary"
+        self.query_one("#logs_button").variant = "default"
+        self.query_one("#setting_button").variant = "default"
+        main = self.query_one("#main_panel")
+        main.remove_children()
+        main.mount(Infer(id="infer_panel"))
+
+    @on(Button.Pressed, "#logs_button")
+    def show_logs(self, event: Button.Pressed) -> None:
+        self.query_one("#infer_button").variant = "default"
+        self.query_one("#logs_button").variant = "primary"
+        self.query_one("#setting_button").variant = "default"
+        main = self.query_one("#main_panel")
+        main.remove_children()
+        main.mount(LogsPanel(id="logs_panel"))
+
+    @on(Button.Pressed, "#setting_button")
+    def show_settings(self, event: Button.Pressed) -> None:
+        self.query_one("#infer_button").variant = "default"
+        self.query_one("#logs_button").variant = "default"
+        self.query_one("#setting_button").variant = "primary"
+        main = self.query_one("#main_panel")
+        main.remove_children()
+        main.mount(SettingsPanel(id="settings_panel"))
 
 
 if __name__ == "__main__":
