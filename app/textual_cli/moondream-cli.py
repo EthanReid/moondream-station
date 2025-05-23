@@ -5,7 +5,6 @@ from textual.containers import (
     Horizontal,
     Vertical,
     ScrollableContainer,
-    VerticalGroup,
 )
 from textual.widgets import (
     Header,
@@ -75,22 +74,21 @@ class ResponseCard(Static):
         self.update(self.text)
 
 
-class Infer(Static):
+class Infer(Vertical):
     def __init__(self, cli: HypervisorCLI, **kwargs) -> None:
         super().__init__(**kwargs)
         self.cli = cli
         self.mode = "caption"
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="infer_layout"):
-            with Horizontal(id="capibility_horizontal_group"):
-                yield Button("Caption", id="caption_button", variant="primary")
-                yield Button("Query", id="query_button")
-                yield Button("Detect", id="detect_button")
-                yield Button("Point", id="point_button")
-            with ScrollableContainer(id="response_container"):
-                yield LoadingIndicator(id="loading_indicator")
-            yield Container(id="capibility_input_container")
+        with Horizontal(id="capibility_horizontal_group"):
+            yield Button("Caption", id="caption_button", variant="primary")
+            yield Button("Query", id="query_button")
+            yield Button("Detect", id="detect_button")
+            yield Button("Point", id="point_button")
+        with ScrollableContainer(id="response_container"):
+            yield LoadingIndicator(id="loading_indicator")
+        yield Container(id="capibility_input_container")
 
     def on_mount(self) -> None:
         """Mount the default input on start so layout positions correctly."""
