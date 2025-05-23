@@ -1,0 +1,24 @@
+MinimalCLI {
+    background: $surface;
+    color: $text;
+}
+
+#responses {
+    height: 10;
+    overflow-y: auto;
+    border: round $secondary;
+    margin: 1;
+}
+
+#modes Button {
+    margin-right: 1;
+}
+
+#inputs Input {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#run_button {
+    width: 10;
+}
