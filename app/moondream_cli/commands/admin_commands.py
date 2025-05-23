@@ -338,7 +338,7 @@ class AdminCommands:
 
         if result and result.get("status") == "ok":
             print(f"Shutdown initiated: {result.get('message', '')}")
-            print("Server is shutting down.")
+            #print("Server is shutting down.")
 
     def check_updates(self) -> None:
         """Check for updates to various components."""

@@ -317,5 +317,6 @@ class Hypervisor:
             logger.debug(f"Inference server shutdown result: {shutdown_result}")
 
         self.status = "off"
+        self.inferencevisor.shutdown()
         # Don't call sys.exit() directly as it interrupts the FastAPI shutdown sequence
         # The calling process should handle termination after this method completes

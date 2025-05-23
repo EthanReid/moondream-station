@@ -359,14 +359,14 @@ def run_main_loop(venv_dir: str, app_dir: str, logger: logging.Logger):
     """
     main_py = "hypervisor_server.py"
     python_bin = os.path.join(venv_dir, "bin", "python")
-    return_code = 0
+    return_code = -1
 
     if PLATFORM == "macOS":
         handler = partial(_unset_sll_cert, logger)
         signal.signal(signal.SIGINT, handler)
         signal.signal(signal.SIGTERM, handler)
 
-    while return_code == 0:
+    while return_code == -1:
         if not os.path.isfile(main_py):
             logger.warning(f"'{main_py}' not found.")
             return
@@ -375,13 +375,14 @@ def run_main_loop(venv_dir: str, app_dir: str, logger: logging.Logger):
 
         proc = subprocess.Popen([python_bin, main_py])
         return_code = proc.wait()
-        logger.warning(f"{main_py} exited with code {return_code}; restarting in 5s.")
+        logger.info(f"{main_py} exited with code {return_code}; restarting in 5s.")
         if return_code != 0:
             print(
                 f"Moondream Station exited with code {return_code}; restarting in 5 seconds..."
             )
-
-        if return_code == 99:
+        elif return_code == 0:
+            sys.exit(0)
+        elif return_code == 99:
             print("Bootstrap update requested. Starting update process...")
             try:
                 update_success = update_bootstrap(app_dir, logger)
