@@ -175,7 +175,7 @@ class MoondreamREPL:
                     print("Type 'help' for a list of available commands")
 
             except KeyboardInterrupt:
-                print("\nUse 'exit' or 'quit' to exit")
+                self.exit([])
             except EOFError:
                 self.exit([])
             except Exception as e:
@@ -241,6 +241,11 @@ class MoondreamREPL:
     def exit(self, args: List[str] = None):
         """Exit the REPL."""
         print("Exiting Moondream CLI...")
+        if self.cli.attached_station:
+            try:
+                self.cli.shutdown()
+            except Exception:
+                pass
         self.running = False
 
     def caption(self, args: List[str]):
