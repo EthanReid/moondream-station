@@ -25,6 +25,7 @@ class CLIVisor:
         self.config = config
         self.manifest = manifest
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.cli_process = None
         logger.debug(f"clivisor initialized")
 
     def boot(self):
@@ -274,3 +275,18 @@ def install_moondream_cli(
             logger.error(f"⚠️  Could not update {rc}: {e}")
 
     return wrapper
+
+    def _kill_process(self):
+        """Terminate the running CLI subprocess if any."""
+        if self.cli_process is None:
+            return
+        try:
+            self.cli_process.terminate()
+            self.cli_process.wait(timeout=5)
+        except Exception:
+            self.cli_process.kill()
+        self.cli_process = None
+
+    def shutdown(self) -> None:
+        """Stop the CLI if it is running."""
+        self._kill_process()

@@ -420,6 +420,13 @@ async def shutdown_server(
     """Initiate a clean shutdown of the hypervisor server and all its components."""
     logger.info("Shutdown requested via API")
 
+    # Read optional exit code from request body
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    exit_code = int(payload.get("code", 0))
+
     # Start shutdown in a background task so we can return a response first
     async def shutdown_background():
         # Give time for the response to be sent
@@ -431,7 +438,7 @@ async def shutdown_server(
             if task is not asyncio.current_task():
                 task.cancel()
         # Signal to uvicorn to stop gracefully
-        os._exit(0)
+        os._exit(exit_code)
 
     # Schedule the background task
     asyncio.create_task(shutdown_background())

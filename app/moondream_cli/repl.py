@@ -175,7 +175,10 @@ class MoondreamREPL:
                     print("Type 'help' for a list of available commands")
 
             except KeyboardInterrupt:
-                print("\nUse 'exit' or 'quit' to exit")
+                if self.cli.attached_station:
+                    self.exit([])
+                else:
+                    print("\nUse 'exit' or 'quit' to exit")
             except EOFError:
                 self.exit([])
             except Exception as e:
@@ -241,6 +244,13 @@ class MoondreamREPL:
     def exit(self, args: List[str] = None):
         """Exit the REPL."""
         print("Exiting Moondream CLI...")
+        if self.cli.attached_station:
+            # Request hypervisor shutdown with non-zero code so bootstrap
+            # does not restart automatically
+            try:
+                self.cli.admin_commands.shutdown(exit_code=1)
+            except Exception:
+                pass
         self.running = False
 
     def caption(self, args: List[str]):
