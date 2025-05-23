@@ -216,6 +216,8 @@ class Hypervisor:
             return
 
         print(f"Updating bootstrap to version {update_status['version']}...")
+        # Stop the CLI so update script can relaunch cleanly
+        self.clivisor.shutdown()
         with Spinner("Shutting down inference server..."):
             shutdown_result = self.inferencevisor.shutdown()
             logger.debug(f"Inference server shutdown result: {shutdown_result}")
@@ -300,6 +302,9 @@ class Hypervisor:
         """
         logger.info("Shutting down hypervisor and all components")
         print("Shutting down Moondream Station...")
+
+        # Stop the CLI first so the terminal is freed
+        self.clivisor.shutdown()
 
         with Spinner("Shutting down inference server..."):
             shutdown_result = self.inferencevisor.shutdown()
