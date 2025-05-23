@@ -83,14 +83,15 @@ class Infer(Static):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="infer_layout"):
-            with Horizontal(id="capibility_horizontal_group"):
-                yield Button("Caption", id="caption_button", variant="primary")
-                yield Button("Query", id="query_button")
-                yield Button("Detect", id="detect_button")
-                yield Button("Point", id="point_button")
             with ScrollableContainer(id="response_container"):
                 yield LoadingIndicator(id="loading_indicator")
-            yield Container(id="capibility_input_container")
+            with Vertical(id="input_section"):
+                with Horizontal(id="capibility_horizontal_group"):
+                    yield Button("Caption", id="caption_button", variant="primary")
+                    yield Button("Query", id="query_button")
+                    yield Button("Detect", id="detect_button")
+                    yield Button("Point", id="point_button")
+                yield Container(id="capibility_input_container")
 
     def on_mount(self) -> None:
         """Mount the default input on start so layout positions correctly."""
@@ -225,8 +226,8 @@ class MoondreamCLI(App):
     def compose(self):
         yield Header()
 
-        with Horizontal(id="main-layout"):
-            with Vertical(id="sidebar"):
+        with Vertical(id="main-layout"):
+            with Horizontal(id="topbar"):
                 yield Button("💬 Infer", id="infer_button", variant="primary")
                 yield Button("🗄️  Logs", id="logs_button")
                 yield Button("⚙️  Setting", id="setting_button")
