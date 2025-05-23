@@ -1,25 +1,7 @@
 from textual import events, on, work
 from textual.app import App, ComposeResult
-from textual.containers import (
-    Container,
-    Horizontal,
-    Vertical,
-    ScrollableContainer,
-    VerticalGroup,
-)
-from textual.widgets import (
-    Header,
-    Footer,
-    Static,
-    Button,
-    Select,
-    Label,
-    LoadingIndicator,
-    Input,
-    RichLog,
-)
-from textual.screen import Screen
-from textual.message import Message
+from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
+from textual.widgets import Header, Button, Input, Static, RichLog, Label, LoadingIndicator
 
 import io
 from contextlib import redirect_stdout
@@ -29,43 +11,37 @@ from config import Config
 
 
 class KeyLogger(RichLog):
+    """Simple logger that records key events."""
+
     def on_key(self, event: events.Key) -> None:
         self.write(event)
 
 
-class CaptionInput(Static):
-    def compose(self):
+class CaptionForm(Static):
+    """Input form for caption mode."""
+
+    def compose(self) -> ComposeResult:
         with Horizontal():
-            yield Button("Submit", id="submit_button", variant="success")
             yield Input(placeholder="Image Path", id="image_path_field")
+            yield Button("Submit", id="submit_button", variant="success")
 
 
-class QueryInput(Static):
-    def compose(self):
+class PromptForm(Static):
+    """Input form for modes that require a prompt."""
+
+    def __init__(self, placeholder: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
         yield Input(placeholder="Image Path", id="image_path_field")
         with Horizontal():
+            yield Input(placeholder=self.placeholder, id="prompt_field")
             yield Button("Submit", id="submit_button", variant="success")
-            yield Input(placeholder="Prompt", id="prompt_field")
-
-
-class DetectInput(Static):
-    def compose(self):
-        yield Input(placeholder="Image Path", id="image_path_field")
-        with Horizontal():
-            yield Button("Submit", id="submit_button", variant="success")
-            yield Input(placeholder="Detect", id="prompt_field")
-
-
-class PointInput(Static):
-    def compose(self):
-        yield Input(placeholder="Image Path", id="image_path_field")
-        with Horizontal():
-            yield Button("Submit", id="submit_button", variant="success")
-            yield Input(placeholder="Point", id="prompt_field")
 
 
 class ResponseCard(Static):
-    """Simple container used to display inference results."""
+    """Container used to display inference results."""
 
     def __init__(self, text: str, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -75,7 +51,9 @@ class ResponseCard(Static):
         self.update(self.text)
 
 
-class Infer(Static):
+class InferPanel(Static):
+    """Panel handling all inference interactions."""
+
     def __init__(self, cli: HypervisorCLI, **kwargs) -> None:
         super().__init__(**kwargs)
         self.cli = cli
@@ -83,77 +61,54 @@ class Infer(Static):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="infer_layout"):
-            with Horizontal(id="capibility_horizontal_group"):
+            with Horizontal(id="mode_bar"):
                 yield Button("Caption", id="caption_button", variant="primary")
                 yield Button("Query", id="query_button")
                 yield Button("Detect", id="detect_button")
                 yield Button("Point", id="point_button")
             with ScrollableContainer(id="response_container"):
                 yield LoadingIndicator(id="loading_indicator")
-            yield Container(id="capibility_input_container")
+            yield Container(CaptionForm(id="active_form"), id="input_container")
 
     def on_mount(self) -> None:
-        """Mount the default input on start so layout positions correctly."""
-        input_container = self.query_one("#capibility_input_container")
-        input_container.mount(CaptionInput())
-        # hide loading indicator initially
-        self.query_one("#loading_indicator").display = False
+        self.query_one("#loading_indicator", LoadingIndicator).display = False
+
+    def _update_buttons(self, active: str) -> None:
+        buttons = ["caption_button", "query_button", "detect_button", "point_button"]
+        for bid in buttons:
+            self.query_one(f"#{bid}").variant = "primary" if bid == active else "default"
+
+    def _set_form(self, form: Static) -> None:
+        container = self.query_one("#input_container")
+        container.remove_children()
+        container.mount(form)
 
     @on(Button.Pressed, "#caption_button")
-    def handle_caption_button(self, event: Button.Pressed) -> None:
+    def set_caption(self, event: Button.Pressed) -> None:
         self.mode = "caption"
-        self.query_one("#caption_button").variant = "primary"
-        self.query_one("#query_button").variant = "default"
-        self.query_one("#detect_button").variant = "default"
-        self.query_one("#point_button").variant = "default"
-
-        # Replace the content in the input container
-        input_container = self.query_one("#capibility_input_container")
-        input_container.remove_children()
-        input_container.mount(CaptionInput())
+        self._update_buttons("caption_button")
+        self._set_form(CaptionForm())
 
     @on(Button.Pressed, "#query_button")
-    def handle_query_button(self, event: Button.Pressed) -> None:
+    def set_query(self, event: Button.Pressed) -> None:
         self.mode = "query"
-        self.query_one("#caption_button").variant = "default"
-        self.query_one("#query_button").variant = "primary"
-        self.query_one("#detect_button").variant = "default"
-        self.query_one("#point_button").variant = "default"
-
-        # Replace the content in the input container
-        input_container = self.query_one("#capibility_input_container")
-        input_container.remove_children()
-        input_container.mount(QueryInput())
+        self._update_buttons("query_button")
+        self._set_form(PromptForm("Prompt"))
 
     @on(Button.Pressed, "#detect_button")
-    def handle_detect_button(self, event: Button.Pressed) -> None:
+    def set_detect(self, event: Button.Pressed) -> None:
         self.mode = "detect"
-        self.query_one("#caption_button").variant = "default"
-        self.query_one("#query_button").variant = "default"
-        self.query_one("#detect_button").variant = "primary"
-        self.query_one("#point_button").variant = "default"
-
-        # Replace the content in the input container
-        input_container = self.query_one("#capibility_input_container")
-        input_container.remove_children()
-        input_container.mount(DetectInput())
+        self._update_buttons("detect_button")
+        self._set_form(PromptForm("Detect"))
 
     @on(Button.Pressed, "#point_button")
-    def handle_point_button(self, event: Button.Pressed) -> None:
+    def set_point(self, event: Button.Pressed) -> None:
         self.mode = "point"
-        self.query_one("#query_button").variant = "default"
-        self.query_one("#caption_button").variant = "default"
-        self.query_one("#detect_button").variant = "default"
-        self.query_one("#point_button").variant = "primary"
-
-        # Replace the content in the input container
-        input_container = self.query_one("#capibility_input_container")
-        input_container.remove_children()
-        input_container.mount(PointInput())
+        self._update_buttons("point_button")
+        self._set_form(PromptForm("Point"))
 
     @work(thread=True)
     def _run_inference(self, mode: str, image_path: str, prompt: str | None) -> str:
-        """Run inference command and capture output."""
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             if mode == "caption":
@@ -167,28 +122,24 @@ class Infer(Static):
         return buffer.getvalue()
 
     @on(Button.Pressed, "#submit_button")
-    async def handle_submit_button(self, event: Button.Pressed) -> None:
-        image_input = self.query_one("#capibility_input_container #image_path_field", Input)
-        image_path = image_input.value
-        prompt_value = None
+    async def handle_submit(self, event: Button.Pressed) -> None:
+        image_path = self.query_one("#input_container #image_path_field", Input).value
+        prompt = None
         try:
-            prompt_value = self.query_one("#capibility_input_container #prompt_field", Input).value
+            prompt = self.query_one("#input_container #prompt_field", Input).value
         except Exception:
-            prompt_value = None
+            prompt = None
 
-        loader = self.query_one("#loading_indicator")
+        loader = self.query_one("#loading_indicator", LoadingIndicator)
         loader.display = True
-
-        worker = self._run_inference(self.mode, image_path, prompt_value)
+        worker = self._run_inference(self.mode, image_path, prompt)
         result = await worker.wait()
         loader.display = False
 
         container = self.query_one("#response_container")
         loader_widget = self.query_one("#loading_indicator")
         if result:
-            await container.mount(
-                ResponseCard(result, classes="response-card"), before=loader_widget
-            )
+            await container.mount(ResponseCard(result, classes="response-card"), before=loader_widget)
             container.scroll_end(animate=False)
 
 
@@ -197,17 +148,17 @@ class MainPanel(Static):
         super().__init__(**kwargs)
         self.cli = cli
 
-    def compose(self):
-        yield Infer(self.cli, id="infer_panel")
+    def compose(self) -> ComposeResult:
+        yield InferPanel(self.cli, id="infer_panel")
 
 
 class LogsPanel(Static):
-    def compose(self):
+    def compose(self) -> ComposeResult:
         yield KeyLogger(id="logs_view")
 
 
 class SettingsPanel(Static):
-    def compose(self):
+    def compose(self) -> ComposeResult:
         cfg = Config()
         with ScrollableContainer(id="settings_container"):
             for key, value in cfg.core_config.items():
@@ -222,42 +173,43 @@ class MoondreamCLI(App):
         super().__init__(**kwargs)
         self.cli = HypervisorCLI(server_url)
 
-    def compose(self):
+    def compose(self) -> ComposeResult:
         yield Header()
-
-        with Horizontal(id="main-layout"):
+        with Horizontal(id="main_layout"):
             with Vertical(id="sidebar"):
                 yield Button("💬 Infer", id="infer_button", variant="primary")
                 yield Button("🗄️  Logs", id="logs_button")
                 yield Button("⚙️  Setting", id="setting_button")
-            yield MainPanel(self.cli, id="main_panel")
+            yield Container(id="main_panel")
+
+    def on_mount(self) -> None:
+        self.show_infer()
+
+    def _swap_panel(self, panel: Static) -> None:
+        main = self.query_one("#main_panel")
+        main.remove_children()
+        main.mount(panel)
 
     @on(Button.Pressed, "#infer_button")
-    def show_infer(self, event: Button.Pressed) -> None:
+    def show_infer(self, event: Button.Pressed | None = None) -> None:
         self.query_one("#infer_button").variant = "primary"
         self.query_one("#logs_button").variant = "default"
         self.query_one("#setting_button").variant = "default"
-        main = self.query_one("#main_panel")
-        main.remove_children()
-        main.mount(Infer(self.cli, id="infer_panel"))
+        self._swap_panel(InferPanel(self.cli, id="infer_panel"))
 
     @on(Button.Pressed, "#logs_button")
     def show_logs(self, event: Button.Pressed) -> None:
         self.query_one("#infer_button").variant = "default"
         self.query_one("#logs_button").variant = "primary"
         self.query_one("#setting_button").variant = "default"
-        main = self.query_one("#main_panel")
-        main.remove_children()
-        main.mount(LogsPanel(id="logs_panel"))
+        self._swap_panel(LogsPanel(id="logs_panel"))
 
     @on(Button.Pressed, "#setting_button")
     def show_settings(self, event: Button.Pressed) -> None:
         self.query_one("#infer_button").variant = "default"
         self.query_one("#logs_button").variant = "default"
         self.query_one("#setting_button").variant = "primary"
-        main = self.query_one("#main_panel")
-        main.remove_children()
-        main.mount(SettingsPanel(id="settings_panel"))
+        self._swap_panel(SettingsPanel(id="settings_panel"))
 
 
 if __name__ == "__main__":
