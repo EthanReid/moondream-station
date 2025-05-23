@@ -7,6 +7,7 @@ import os, stat, textwrap
 import subprocess
 import shutil
 import shlex
+from typing import Optional
 
 from config import Config
 from manifest import Manifest
@@ -25,6 +26,7 @@ class CLIVisor:
         self.config = config
         self.manifest = manifest
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.cli_process: Optional[subprocess.Popen] = None
         logger.debug(f"clivisor initialized")
 
     def boot(self):
@@ -95,6 +97,25 @@ class CLIVisor:
 
         logger.debug(f"CLI process started with PID {process.pid}")
         self.cli_process = process
+
+    def _kill_process(self) -> None:
+        """Terminate the CLI subprocess if it is running."""
+        if self.cli_process and self.cli_process.poll() is None:
+            try:
+                self.cli_process.terminate()
+                self.cli_process.wait(timeout=5)
+            except Exception as e:
+                logger.debug(f"Error terminating CLI process: {e}")
+                try:
+                    self.cli_process.kill()
+                    self.cli_process.wait(timeout=5)
+                except Exception as e2:
+                    logger.debug(f"Failed to kill CLI process: {e2}")
+        self.cli_process = None
+
+    def shutdown(self) -> None:
+        """Shut down the CLI launched by the hypervisor."""
+        self._kill_process()
 
     def check_for_update(self, update_manifest: bool = True) -> dict:
         """

@@ -2,6 +2,8 @@ import sys
 import time
 import requests
 import subprocess
+import os
+import shutil
 
 from typing import Dict, Any, Optional
 
@@ -387,18 +389,30 @@ class AdminCommands:
             else:
                 print("CLI update initiated successfully.")
 
-            # Exit after CLI update is complete on Ubuntu, as the CLI process needs to end
-            # so that the new CLI can be used on next invocation
             if check_platform() == "ubuntu":
-                print(
-                    "⚠️ CLI update complete. Please restart the CLI to use the updated version."
+                # Attempt to relaunch the updated CLI automatically
+                new_cli = shutil.which("moondream") or os.path.expanduser(
+                    "~/.local/bin/moondream"
                 )
-                sys.exit(0)
+                if new_cli and os.path.isfile(new_cli):
+                    print("Restarting CLI with updated version...")
+                    os.execv(new_cli, [new_cli] + sys.argv[1:])
+                else:
+                    print(
+                        "⚠️ CLI update complete. Please restart the CLI to use the updated version."
+                    )
+                    sys.exit(0)
 
         except requests.exceptions.ConnectionError:
             print("Update initiated. CLI is updating...")
             if check_platform() == "ubuntu":
-                sys.exit(0)
+                new_cli = shutil.which("moondream") or os.path.expanduser(
+                    "~/.local/bin/moondream"
+                )
+                if new_cli and os.path.isfile(new_cli):
+                    os.execv(new_cli, [new_cli] + sys.argv[1:])
+                else:
+                    sys.exit(0)
         except Exception as e:
             print(f"Error initiating CLI update: {e}")
 
