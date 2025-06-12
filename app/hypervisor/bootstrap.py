@@ -291,6 +291,8 @@ def install_requirements(venv_dir: str, logger: logging.Logger):
     Raises:
         FileNotFoundError: If Python executable not found
     """
+    start_time = time.time()
+    logger.info("Installing Python requirements for hypervisor bootstrap...")
     requirements_file = "requirements.txt"
     python_bin = os.path.join(venv_dir, "bin", "python")
     logger.info(f"Using {python_bin} to install packages")
@@ -311,6 +313,19 @@ def install_requirements(venv_dir: str, logger: logging.Logger):
     if res.stderr:
         logger.debug(f"Pip upgrade stderr:\n{res.stderr}")
 
+    logger.info("Installing uv package for fast Python package management...")
+    with Spinner("Installing uv..."):
+        res_uv = subprocess.run(
+            [python_bin, "-m", "pip", "install", "--upgrade", "uv"],
+            capture_output=True,
+            text=True,
+        )
+    logger.info(f"uv install return code: {res_uv.returncode}")
+    if res_uv.stdout:
+        logger.debug(f"uv install stdout:\n{res_uv.stdout}")
+    if res_uv.stderr:
+        logger.debug(f"uv install stderr:\n{res_uv.stderr}")
+
     if not os.path.isfile(requirements_file):
         logger.info(f"'{requirements_file}' not found, skipping requirements install.")
         return
@@ -318,7 +333,7 @@ def install_requirements(venv_dir: str, logger: logging.Logger):
     logger.info(f"Installing requirements from {requirements_file}")
     with Spinner("Installing Python requirements (this may take several minutes)..."):
         res = subprocess.run(
-            [python_bin, "-m", "pip", "install", "-U", "-r", requirements_file],
+            [python_bin, "-m", "uv", "pip", "install", "-U", "-r", requirements_file],
             capture_output=True,
             text=True,
         )
@@ -336,6 +351,11 @@ def install_requirements(venv_dir: str, logger: logging.Logger):
         logger.debug(f"Packages:\n{check_packages.stdout}")
     else:
         logger.debug(f"Error listing packages:\n{check_packages.stderr}")
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    logger.info(
+        f"Python requirements for hypervisor bootstrap installed in {elapsed_time:.2f} seconds"
+    )
 
 
 def _unset_sll_cert(signum: int, frame, logger: logging.Logger) -> None:
