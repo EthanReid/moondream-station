@@ -4,7 +4,7 @@ import logging
 
 from typing import Dict, Any, Optional, List
 
-from misc import parse_version, parse_revision, download_file, check_platform
+from misc import parse_version, parse_date, download_file, check_platform
 
 PLATFORM = check_platform()
 MANIFEST_URL = "https://depot.moondream.ai/station/md_station_manifest_ubuntu.json"
@@ -86,11 +86,14 @@ class Manifest:
     def current_cli(self) -> Dict[str, str]:
         return self.data.get("current_cli", {})
 
-    def get_model(self, revision: str) -> Optional[Dict[str, Any]]:
-        return {
-            "revision": revision,
-            "model": self.models.get(revision, None),
-        }
+    
+    def get_model(self, model_name: str) -> Optional[Dict[str, Any]]:
+        if model_name in self.models:
+            return {
+                "model_name": model_name,
+                "model": self.models[model_name],
+            }
+        return None
 
     @property
     def models(self) -> Dict[str, Dict[str, Any]]:
@@ -101,33 +104,48 @@ class Manifest:
         models_dict = self.models
         if not models_dict:
             return None
+        
+        release_dates = [model_data.get("release_date") for model_data in models_dict.values() if model_data.get("release_date")]
+        if not release_dates:
+            return None
+        
         # Group revisions by their numeric components
-        grouped = {}
-        for rev in models_dict.keys():
-            numeric = parse_revision(rev)
-            grouped.setdefault(numeric, []).append(rev)
 
-        # Determine the numerically latest revision
+        grouped = {}
+        for date in release_dates:
+            numeric = parse_date(date)
+            grouped.setdefault(numeric, []).append(date)
+        
         latest_numeric = max(grouped.keys())
         candidates = grouped[latest_numeric]
+        
+        chosen = None
 
+        # Determine the numerically latest revision
+        for date in candidates:
+            if "4bit" in date:
+                chosen = date
+                break
+        
         # Prefer a revision containing "4bit" when multiple revisions share the
         # same numeric value. Otherwise favour the revision without alphabetic
         # characters.
-        chosen = None
-        for rev in candidates:
-            if "4bit" in rev:
-                chosen = rev
-                break
         if not chosen:
-            for rev in candidates:
-                if all(c.isdigit() or c == "-" for c in rev):
-                    chosen = rev
+            for date in candidates:
+                if all(c.isdigit() or c == "-" for c in date):
+                    chosen = date
                     break
         if not chosen:
             chosen = candidates[0]
-
-        return self.get_model(chosen)
+        
+        for model_name, model_data in models_dict.items():
+            if model_data.get("release_date") == chosen:
+                return {
+                    "model_name": model_name,
+                    "model": model_data,
+                }
+        
+        return None
 
     def get_inference_client(self, version: str) -> Optional[Dict[str, str]]:
         return self.data.get("inference_clients", {}).get(version, None)
