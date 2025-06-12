@@ -108,6 +108,9 @@ def model_commands_box():
         "│  help                     Show help information                       │"
     )
     result.append(
+        "│  clear                    Clear the terminal screen                   │"
+    )
+    result.append(
         "│  admin                    Administrative commands                     │"
     )
     result.append(
