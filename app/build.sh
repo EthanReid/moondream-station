@@ -199,6 +199,13 @@ prepare_dev() {
 }
 
 ##############################################################################
+# execution
+##############################################################################
+run_station() {
+    cd ..
+    ./output/moondream_station/moondream_station
+}
+##############################################################################
 # dispatch
 ##############################################################################
 case "$TYPE" in
@@ -206,8 +213,9 @@ case "$TYPE" in
     hypervisor)  build_hypervisor  ;;
     cli)         build_cli         ;;
     dev)         prepare_dev       ;;
+    run)         run_station       ;;
     *)
-        echo "Usage: $0 <inference|hypervisor|cli|dev> [platform]" >&2
+        echo "Usage: $0 {inference|hypervisor|cli|dev} [platform] | $0 run" >&2
         exit 1
         ;;
 esac
