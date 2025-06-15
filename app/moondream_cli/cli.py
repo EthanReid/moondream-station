@@ -90,6 +90,10 @@ class HypervisorCLI:
         """Check the health of all components."""
         self.admin_commands.health()
 
+    def clear(self) -> None:
+        """Clear the terminal screen."""
+        os.system('clear')
+        
     def get_config(self) -> None:
         """Get the current server configuration."""
         self.admin_commands.get_config()
