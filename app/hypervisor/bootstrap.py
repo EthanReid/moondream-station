@@ -311,6 +311,19 @@ def install_requirements(venv_dir: str, logger: logging.Logger):
     if res.stderr:
         logger.debug(f"Pip upgrade stderr:\n{res.stderr}")
 
+    logger.info("Installing uv...")
+    with Spinner("Installing uv..."):
+        res_uv = subprocess.run(
+            [python_bin, "-m", "pip", "install", "--upgrade", "uv"],
+            capture_output=True,
+            text=True,
+        )
+    logger.info(f"uv install return code: {res_uv.returncode}")
+    if res_uv.stdout:
+        logger.debug(f"uv install stdout:\n{res_uv.stdout}")
+    if res_uv.stderr:
+        logger.debug(f"uv install stderr:\n{res_uv.stderr}")
+
     if not os.path.isfile(requirements_file):
         logger.info(f"'{requirements_file}' not found, skipping requirements install.")
         return
@@ -318,7 +331,7 @@ def install_requirements(venv_dir: str, logger: logging.Logger):
     logger.info(f"Installing requirements from {requirements_file}")
     with Spinner("Installing Python requirements (this may take several minutes)..."):
         res = subprocess.run(
-            [python_bin, "-m", "pip", "install", "-U", "-r", requirements_file],
+            [python_bin, "-m", "uv", "pip", "install", "-U", "-r", requirements_file],
             capture_output=True,
             text=True,
         )
