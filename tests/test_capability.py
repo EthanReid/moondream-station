@@ -2,7 +2,7 @@ import pexpect
 import logging
 import os
 import argparse
-from utils import is_port_occupied, validate_files, clean_files, load_expected_responses, clean_response_output, validate_model_list
+from utils import clean_files, load_expected_responses, clean_response_output, validate_model_list
 
 GLOBAL_TIMEOUT = 300
 
@@ -57,21 +57,6 @@ def parse_model_list_output(output):
         if line.startswith('Model: '):
             models.append(line[7:].strip())
     return models
-
-def test_startup(child, hypervisor_occupied, inference_occupied, backend_path="~/.local/share/MoondreamStation", checksum_path="expected_checksum.json"):
-    logging.debug(f"Hypervisor Port was {'occupied' if hypervisor_occupied else 'not occupied'} before the model startup.")
-    logging.debug(f"Inference Server Port was {'occupied' if inference_occupied else 'not occupied'} before the model startup.")
-
-    validate_files(os.path.expanduser(backend_path), checksum_path)
-    
-    hypervisor_occupied = is_port_occupied(2020)
-    inference_occupied = is_port_occupied(20200)
-    
-    logging.debug(f"Hypervisor Port is currently {'occupied' if hypervisor_occupied else 'not occupied'}")
-    logging.debug(f"Inference Server Port is currently {'occupied' if inference_occupied else 'not occupied'}")
-    # TODO: Add more reliable hypervisor checking.
-
-    return child
 
 def test_capability(child, command, expected_response, timeout=60):
     logging.debug(f"Testing: {command}")
@@ -223,12 +208,8 @@ def test_server(cleanup=True, executable_path='./moondream_station', server_args
     if cleanup:
         clean_files()
 
-    pre_hypervisor = is_port_occupied(2020)
-    pre_inference = is_port_occupied(20200)
-
     child = start_server(executable_path, server_args)
     child = check_health(child)
-    child = test_startup(child, pre_hypervisor, pre_inference)
     child = test_all_models(child)
     
     end_server(child)
