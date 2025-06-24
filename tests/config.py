@@ -30,7 +30,7 @@ class Config:
         'success': r'Model initialization completed successfully'
     }
 
-    MANIFEST_VERSIONS = [1, 2, 3, 4, 5]
+    MANIFEST_VERSIONS = [1, 2, 3, 4, 5, 6]
     
     VERSION_Config = {
         'check_updates': {
@@ -55,6 +55,6 @@ class Config:
 class Timeouts:
     QUICK = 15
     STANDARD = 60
-    STARTUP = 60
+    STARTUP = 100
     UPDATE = 300
     RECOVERY = 30
