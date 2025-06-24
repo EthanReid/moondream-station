@@ -227,180 +227,90 @@ class Validator:
 class Updater:
     def __init__(self, server):
         self.server = server
+        self.log = lambda msg, lvl="debug": (
+            DebugTracer.log(msg, "UPDATER"),
+            getattr(logging, lvl)(msg)
+        )
+    
+    def _update(self, command, update_type, patterns, expect_exit=False):
+        """Core update logic shared by all update methods."""
+        self.log(f"Starting {update_type} update: {command}")
+        
+        try:
+            cmd = Commands(self.server.process)
+            
+            if expect_exit:
+                cmd.run(command, expect_pattern=patterns[0], 
+                       timeout=Timeouts.UPDATE, expect_exit=True)
+            else:
+                self.server.process.sendline(command)
+                try:
+                    idx = self.server.process.expect(patterns, timeout=Timeouts.UPDATE)
+                    if idx < len(patterns) - 1:  # Not the prompt pattern
+                        self.log(f"{update_type} completed, exiting")
+                        self._safe_exit()
+                    else:
+                        self.log(f"{update_type} returned to prompt unexpectedly", "warning")
+                except pexpect.TIMEOUT:
+                    self.log(f"Timeout during {update_type}, forcing exit", "warning")
+                    self._safe_exit()
+            
+            self._restart()
+            return True
+            
+        except Exception as e:
+            self.log(f"{update_type} failed: {e}", "error")
+            self._recover()
+            return False
+    
+    def _safe_exit(self):
+        """Safely exit CLI."""
+        try:
+            self.server.process.sendline('exit')
+            self.server.process.expect(Config.EXIT_MESSAGE, timeout=Timeouts.QUICK)
+        except (pexpect.TIMEOUT, pexpect.EOF):
+            pass
+    
+    def _restart(self):
+        """Force close and restart server."""
+        if self.server.process.isalive():
+            self.server.process.close(force=True)
+        self.server.restart()
+        self.log("Server restarted")
+    
+    def _recover(self):
+        """Attempt recovery after failure."""
+        try:
+            if self.server.process.isalive():
+                self.server.process.close(force=True)
+            time.sleep(3)
+            self.server.restart()
+        except Exception as e:
+            self.log(f"Recovery failed: {e}", "error")
     
     @DebugTracer.log_operation
     def bootstrap(self, command='admin update-bootstrap --confirm'):
-        DebugTracer.log(f"Starting bootstrap update with command: {command}", "UPDATER")
-        logging.debug(f"Executing bootstrap update: {command}")
-        try:
-            cmd = Commands(self.server.process)
-            cmd.run(command, expect_pattern=Config.UPDATE_COMPLETION['bootstrap'], 
-                   timeout=Timeouts.UPDATE, expect_exit=True)
-            DebugTracer.log("Bootstrap update command completed", "UPDATER")
-            logging.debug("Bootstrap update completed successfully")
-            
-            if self.server.process.isalive():
-                DebugTracer.log("Closing process after bootstrap update", "UPDATER")
-                self.server.process.close(force=True)
-            
-            DebugTracer.log("Restarting server after bootstrap update", "UPDATER")
-            self.server.restart()
-            DebugTracer.log("Bootstrap update sequence completed successfully", "UPDATER")
-            logging.debug("Server restarted after bootstrap update")
-            return True
-        except Exception as e:
-            DebugTracer.log(f"Bootstrap update failed: {str(e)}", "UPDATER")
-            logging.error(f"Bootstrap update failed: {e}")
-            try:
-                if self.server.process.isalive():
-                    DebugTracer.log("Force closing process after bootstrap error", "UPDATER")
-                    self.server.process.close(force=True)
-                time.sleep(3)
-                DebugTracer.log("Attempting server recovery after bootstrap failure", "UPDATER")
-                self.server.restart()
-                DebugTracer.log("Server recovery completed", "UPDATER")
-                logging.debug("Server recovered after bootstrap update failure")
-                return False
-            except Exception as recover_error:
-                DebugTracer.log(f"Server recovery failed: {str(recover_error)}", "UPDATER")
-                logging.error(f"Failed to recover server: {recover_error}")
-                return False
+        return self._update(command, "bootstrap", 
+                          [Config.UPDATE_COMPLETION['bootstrap']], 
+                          expect_exit=True)
     
     @DebugTracer.log_operation
     def hypervisor(self, command='admin update-hypervisor --confirm'):
-        DebugTracer.log(f"Starting hypervisor update with command: {command}", "UPDATER")
-        logging.debug(f"Executing hypervisor update: {command}")
-        try:
-            self.server.process.sendline(command)
-            try:
-                DebugTracer.log("Waiting for hypervisor update completion Config", "UPDATER")
-                index = self.server.process.expect([
-                    Config.UPDATE_COMPLETION['hypervisor_complete'],
-                    Config.UPDATE_COMPLETION['hypervisor_off'],
-                    Config.PROMPT
-                ], timeout=Timeouts.UPDATE)
-                
-                if index == 0:
-                    DebugTracer.log("Hypervisor update completed normally", "UPDATER")
-                    logging.debug("Hypervisor update completed")
-                    self.server.process.expect(Config.PROMPT, timeout=Timeouts.QUICK)
-                elif index == 1:
-                    DebugTracer.log("Hypervisor off state detected - exiting as expected", "UPDATER")
-                    logging.debug("Found 'Hypervisor: off' state - exiting as expected")
-                    self.server.process.sendline('exit')
-                    try:
-                        self.server.process.expect(Config.EXIT_MESSAGE, timeout=Timeouts.QUICK)
-                        DebugTracer.log("Clean exit after hypervisor update", "UPDATER")
-                        logging.debug("Exited CLI after hypervisor update")
-                    except (pexpect.TIMEOUT, pexpect.EOF):
-                        DebugTracer.log("Process ended during hypervisor update exit", "UPDATER")
-                        logging.debug("CLI process ended during hypervisor update")
-                else:
-                    DebugTracer.log("Hypervisor update returned to prompt unexpectedly", "UPDATER")
-                    logging.warning("Hypervisor update returned to prompt unexpectedly")
-            except pexpect.TIMEOUT:
-                DebugTracer.log("Timeout during hypervisor update - forcing exit", "UPDATER")
-                logging.warning("Timeout waiting for hypervisor update - exiting")
-                self.server.process.sendline('exit')
-                try:
-                    self.server.process.expect(Config.EXIT_MESSAGE, timeout=Timeouts.QUICK)
-                except pexpect.TIMEOUT:
-                    DebugTracer.log("Timeout during forced exit", "UPDATER")
-                    pass
-            
-            if self.server.process.isalive():
-                DebugTracer.log("Force closing process after hypervisor update", "UPDATER")
-                self.server.process.close(force=True)
-            
-            DebugTracer.log("Restarting server after hypervisor update", "UPDATER")
-            self.server.restart()
-            DebugTracer.log("Hypervisor update sequence completed successfully", "UPDATER")
-            logging.debug("Server restarted after hypervisor update")
-            return True
-        except Exception as e:
-            DebugTracer.log(f"Hypervisor update failed: {str(e)}", "UPDATER")
-            logging.error(f"Hypervisor update failed: {e}")
-            try:
-                if self.server.process.isalive():
-                    DebugTracer.log("Force closing process after hypervisor error", "UPDATER")
-                    self.server.process.close(force=True)
-                DebugTracer.log("Attempting server recovery after hypervisor failure", "UPDATER")
-                self.server.restart()
-                DebugTracer.log("Server recovery completed", "UPDATER")
-                logging.debug("Server recovered after hypervisor update failure")
-                return False
-            except Exception as recover_error:
-                DebugTracer.log(f"Server recovery failed: {str(recover_error)}", "UPDATER")
-                logging.error(f"Failed to recover server: {recover_error}")
-                return False
+        return self._update(command, "hypervisor", [
+            Config.UPDATE_COMPLETION['hypervisor_complete'],
+            Config.UPDATE_COMPLETION['hypervisor_off'],
+            Config.PROMPT
+        ])
     
     @DebugTracer.log_operation
     def full(self, command='admin update --confirm', update_type="general"):
-        DebugTracer.log(f"Starting full update ({update_type}) with command: {command}", "UPDATER")
-        logging.debug(f"Executing full update ({update_type}): {command}")
-        try:
-            self.server.process.sendline(command)
-            try:
-                completion_patterns = {  # ← Different variable name
-                    "model": Config.UPDATE_COMPLETION['model'],
-                    "cli": Config.UPDATE_COMPLETION['cli'], 
-                    "general": f"({Config.UPDATE_COMPLETION['model']}|{Config.UPDATE_COMPLETION['cli']})"
-                }
-                
-                completion_pattern = completion_patterns.get(update_type, completion_patterns["general"])
-                DebugTracer.log(f"Waiting for completion pattern: {completion_pattern}", "UPDATER")
-                index = self.server.process.expect([completion_pattern, Config.PROMPT], timeout=Timeouts.UPDATE)
-                
-                if index == 0:
-                    DebugTracer.log(f"Full update ({update_type}) completion message found", "UPDATER")
-                    logging.debug(f"Found completion message for {update_type} update - exiting")
-                    self.server.process.sendline('exit')
-                    try:
-                        self.server.process.expect(Config.EXIT_MESSAGE, timeout=Timeouts.QUICK)
-                        DebugTracer.log(f"Clean exit after {update_type} update", "UPDATER")
-                        logging.debug(f"Exited CLI after {update_type} update")
-                    except (pexpect.TIMEOUT, pexpect.EOF):
-                        DebugTracer.log(f"Process ended during {update_type} update exit", "UPDATER")
-                        logging.debug(f"CLI process ended during {update_type} update")
-                else:
-                    DebugTracer.log(f"Full update ({update_type}) returned to prompt unexpectedly", "UPDATER")
-                    logging.warning(f"Full update ({update_type}) returned to prompt unexpectedly")
-                    
-            except pexpect.TIMEOUT:
-                DebugTracer.log(f"Timeout during {update_type} update - forcing exit", "UPDATER")
-                logging.warning(f"Timeout waiting for {update_type} update completion - exiting")
-                self.server.process.sendline('exit')
-                try:
-                    self.server.process.expect(Config.EXIT_MESSAGE, timeout=Timeouts.QUICK)
-                except pexpect.TIMEOUT:
-                    DebugTracer.log("Timeout during forced exit", "UPDATER")
-                    pass
-            
-            if self.server.process.isalive():
-                DebugTracer.log(f"Force closing process after {update_type} update", "UPDATER")
-                self.server.process.close(force=True)
-            
-            DebugTracer.log(f"Restarting server after {update_type} update", "UPDATER")
-            self.server.restart()
-            DebugTracer.log(f"Full update ({update_type}) sequence completed successfully", "UPDATER")
-            logging.debug(f"Server restarted after {update_type} update")
-            return True
-        except Exception as e:
-            DebugTracer.log(f"Full update ({update_type}) failed: {str(e)}", "UPDATER")
-            logging.error(f"Full update ({update_type}) failed: {e}")
-            try:
-                if self.server.process.isalive():
-                    DebugTracer.log(f"Force closing process after {update_type} error", "UPDATER")
-                    self.server.process.close(force=True)
-                DebugTracer.log(f"Attempting server recovery after {update_type} failure", "UPDATER")
-                self.server.restart()
-                DebugTracer.log("Server recovery completed", "UPDATER")
-                logging.debug(f"Server recovered after {update_type} update failure")
-                return False
-            except Exception as recover_error:
-                DebugTracer.log(f"Server recovery failed: {str(recover_error)}", "UPDATER")
-                logging.error(f"Failed to recover server: {recover_error}")
-                return False
+        patterns = {
+            "model": Config.UPDATE_COMPLETION['model'],
+            "cli": Config.UPDATE_COMPLETION['cli'],
+            "general": f"({Config.UPDATE_COMPLETION['model']}|{Config.UPDATE_COMPLETION['cli']})"
+        }
+        return self._update(command, update_type, 
+                          [patterns.get(update_type, patterns["general"]), Config.PROMPT])
 
 class TestSuite:
     def __init__(self, executable='./moondream_station', args=None, cleanup=True, test_capabilities=False):
