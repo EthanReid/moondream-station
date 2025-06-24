@@ -106,24 +106,6 @@ def validate_files(dir_path, expected_json):
 def is_port_occupied(port, host='localhost'):
    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
        return s.connect_ex((host, port)) == 0
-   
-def get_port_process_pid(port):
-    for proc in psutil.process_iter(['pid', 'connections']):
-        try:
-            connections = proc.info['connections'] or []
-            for conn in connections:
-                if conn.laddr.port == port and conn.status == 'LISTEN':
-                    return proc.info['pid']
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return None
-
-def get_process_start_time(pid):
-    try:
-        proc = psutil.Process(pid)
-        return proc.create_time()
-    except:
-        return None
 
 def parse_model_list(output):
     models = {}

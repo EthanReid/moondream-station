@@ -9,18 +9,6 @@ def get_md5(filepath):
     except (IOError, OSError):
         return None
 
-def scan_directory(root_path):
-    result = {}
-    for root, dirs, files in os.walk(root_path):
-        for file in files:
-            full_path = os.path.join(root, file)
-            if os.path.isfile(full_path):
-                rel_path = os.path.relpath(full_path, root_path).replace('\\', '/')
-                md5_hash = get_md5(full_path)
-                if md5_hash:
-                    result[rel_path] = md5_hash
-    return result
-
 def validate_directory(dir_path, expected_json_path):
     if not os.path.exists(expected_json_path):
         return {'error': f'Expected JSON not found: {expected_json_path}', 'valid': False}
