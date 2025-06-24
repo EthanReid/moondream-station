@@ -9,7 +9,7 @@ mkdir -p tar_files
 cd ../app
 
 echo "=== Building v0.0.2 (clean build) with localhost manifest ==="
-bash build.sh dev ubuntu v0.0.2 --build-clean --manifest-url "http://localhost:3020/manifest.json" --build-clean
+bash build.sh dev ubuntu v0.0.2 --manifest-url "http://localhost:3020/manifest.json" --build-clean
 
 echo "=== Copying v0.0.2 tar files ==="
 cp ../output/*_v002.tar.gz ../tests/tar_files/
