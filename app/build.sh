@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # Usage: ./build.sh <type> <platform> <version> [--manifest-url URL]
-
-# Parse args more carefully
+# Parse args
 CLEAN=false
 MANIFEST_URL=""
 ARGS=()
-
 # First pass: extract flags and build clean args array
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -31,7 +29,7 @@ done
 
 TYPE=${ARGS[0]:-}
 PLATFORM=${ARGS[1]:-ubuntu}
-VERSION=${ARGS[2]:-v0.0.1}
+VERSION=${ARGS[2]:-}  # No default version
 
 update_version_strings() {
     local version=$1
@@ -49,7 +47,7 @@ update_version_strings() {
     # Update inference version  
     sed -i.bak "s/VERSION = \".*\"/VERSION = \"$version\"/" ../app/inference_client/main.py
     
-    # Update CLI version (check if __init__.py exists, if not try other locations)
+    # Update CLI version (check if **init**.py exists, if not try other locations)
     if [ -f "../app/moondream_cli/__init__.py" ]; then
         sed -i.bak "s/VERSION = \".*\"/VERSION = \"$version\"/" ../app/moondream_cli/__init__.py
     elif [ -f "../app/moondream_cli/cli.py" ]; then
@@ -68,16 +66,14 @@ update_version_strings() {
         grep "MANIFEST_URL" ../app/hypervisor/manifest.py
     fi
 }
-
 restore_version_strings() {
     echo "Restoring original version strings..."
     # Restore from .bak files
     find ../app -name "*.bak" -exec sh -c 'mv "$1" "${1%.bak}"' _ {} \;
 }
 
-# Set up cleanup trap
+# Cleanup trap to restore version strings if the script exits unexpectedly
 trap restore_version_strings EXIT
-
 if $CLEAN; then
     echo "Cleaning output and dev directories..."
     rm -rf ../output
@@ -89,27 +85,33 @@ if $CLEAN; then
 fi
 
 set -euo pipefail
-
 # Only show build messages when actually building, not when running
 if [[ "$TYPE" != "run" ]]; then
-    echo "Building with version: $VERSION"
+    if [ -n "$VERSION" ]; then
+        echo "Building with version: $VERSION"
+    else
+        echo "Building without version suffix"
+    fi
     if [ -n "$MANIFEST_URL" ]; then
         echo "Using custom manifest URL: $MANIFEST_URL"
     fi
     
-    # Update version strings before building
-    update_version_strings "$VERSION" "$MANIFEST_URL"
+    # Update version strings before building (only if version provided)
+    if [ -n "$VERSION" ]; then
+        update_version_strings "$VERSION" "$MANIFEST_URL"
+    fi
 fi
-
 ##############################################################################
 # builders
 ##############################################################################
 build_inference() {
+    local PYI_ARGS="--onefile"
     local NAME="inference_bootstrap"
     local DIST_DIR="../output/inference_bootstrap"
     local BOOTSTRAP="../app/inference_client/bootstrap.py"
     local SRC_DIR="../app/inference_client"
     local FILES=(main.py model_service.py requirements.txt)
+
     local LIBPYTHON
         LIBPYTHON=$(
 python - <<'PY'
@@ -128,12 +130,14 @@ else:
     sys.exit(1)
 PY
 ) || exit 1
-        
-        # Build with libpython bundled
-        local PYI_ARGS="--onefile"
-        
+
+        # Build a single-file executable and drop libpython next to the bootstrap
+        PYI_ARGS="--onefile" 
+        #--add-binary ${LIBPYTHON}"
+
     echo "Building 'inference'..."
     rm -rf "$DIST_DIR"; mkdir -p "$DIST_DIR"
+
     pyinstaller $PYI_ARGS \
         --hidden-import=urllib.request \
         --hidden-import=zipfile \
@@ -142,20 +146,26 @@ PY
         --clean \
         --distpath "$DIST_DIR" \
         "$BOOTSTRAP"
+
     for f in "${FILES[@]}"; do
         cp "$SRC_DIR/$f" "$DIST_DIR"
     done
     echo "!!!!!! my current working dir is $PWD"
     
-    # Create versioned tarball
-    local VERSION_SUFFIX="_${VERSION//./}"  # v0.0.1 -> _v001
-    tar -czf "../output/inference_bootstrap${VERSION_SUFFIX}.tar.gz" -C "../output" "inference_bootstrap"
-    
-    echo "✔ inference → $DIST_DIR (${VERSION})"
+    # Create tarball with or without version suffix
+    if [ -n "$VERSION" ]; then
+        local VERSION_SUFFIX="_${VERSION//./}"
+        tar -czf "../output/inference_bootstrap${VERSION_SUFFIX}.tar.gz" -C "../output" "inference_bootstrap"
+        echo "✔ inference → $DIST_DIR (${VERSION})"
+    else
+        tar -czf "../output/inference_bootstrap.tar.gz" -C "../output" "inference_bootstrap"
+        echo "✔ inference → $DIST_DIR"
+    fi
 }
 
 build_hypervisor() {
     local PYI_ARGS
+
     if [[ "$PLATFORM" = "mac" ]]; then
         # macOS always embeds Python.framework for us
         PYI_ARGS="--windowed"
@@ -179,6 +189,7 @@ else:
     sys.exit(1)
 PY
 ) || exit 1
+
         # Build a single-file executable and drop libpython next to the bootstrap
         PYI_ARGS="--onefile"
         # --add-binary ${LIBPYTHON}"
@@ -186,6 +197,7 @@ PY
         echo "Unknown platform '$PLATFORM' (mac|ubuntu)" >&2
         exit 1
     fi
+
     local NAME="moondream_station"
     local DIST_DIR="../output/moondream_station"
     local SUP_DIR="../output/moondream-station-files"
@@ -196,8 +208,10 @@ PY
         manifest.py config.py misc.py update_bootstrap.sh clivisor.py
         display_utils.py
     )
+
     echo "Building 'hypervisor' for $PLATFORM..."
     rm -rf "$DIST_DIR" "$SUP_DIR"; mkdir -p "$DIST_DIR" "$SUP_DIR"
+
     pyinstaller $PYI_ARGS \
         --hidden-import=urllib.request \
         --hidden-import=zipfile \
@@ -205,31 +219,41 @@ PY
         --clean \
         --distpath "$DIST_DIR" \
         "$BOOTSTRAP"
+
     for f in "${FILES[@]}"; do
         cp "$SRC_DIR/$f" "$SUP_DIR/"
     done
     
-    # Create versioned tarballs
-    local VERSION_SUFFIX="_${VERSION//./}"  # v0.0.1 -> _v001
-    tar -czf "../output/hypervisor${VERSION_SUFFIX}.tar.gz" -C "$SUP_DIR" .
-    tar -czf "../output/moondream_station_ubuntu${VERSION_SUFFIX}.tar.gz" -C "$DIST_DIR" moondream_station
-    
-    echo "✔ hypervisor → $DIST_DIR (${VERSION})"
+    # Create tarballs with or without version suffix
+    if [ -n "$VERSION" ]; then
+        local VERSION_SUFFIX="_${VERSION//./}"
+        tar -czf "../output/hypervisor${VERSION_SUFFIX}.tar.gz" -C "$SUP_DIR" .
+        tar -czf "../output/moondream_station_ubuntu${VERSION_SUFFIX}.tar.gz" -C "$DIST_DIR" moondream_station
+        echo "✔ hypervisor → $DIST_DIR (${VERSION})"
+    else
+        tar -czf "../output/hypervisor.tar.gz" -C "$SUP_DIR" .
+        tar -czf "../output/moondream_station_ubuntu.tar.gz" -C "$DIST_DIR" moondream_station
+        echo "✔ hypervisor → $DIST_DIR"
+    fi
 }
 
 build_cli() {
     local NAME="moondream-cli"
     local DIST_DIR="../output/moondream-cli"
     local SRC_DIR="../app/moondream_cli"
+
     echo "Building 'cli'..."
     rm -rf "$DIST_DIR"; mkdir -p "$DIST_DIR"
     cp -r "$SRC_DIR" "$DIST_DIR/"
-    
-    # Create versioned tarball
-    local VERSION_SUFFIX="_${VERSION//./}"  # v0.0.1 -> _v001
-    tar -czf "../output/moondream-cli${VERSION_SUFFIX}.tar.gz" -C "$DIST_DIR" moondream_cli
-    
-    echo "✔ cli → $DIST_DIR (${VERSION})"
+
+    if [ -n "$VERSION" ]; then
+        local VERSION_SUFFIX="_${VERSION//./}"
+        tar -czf "../output/moondream-cli${VERSION_SUFFIX}.tar.gz" -C "$DIST_DIR" moondream_cli
+        echo "✔ cli → $DIST_DIR (${VERSION})"
+    else
+        tar -czf "../output/moondream-cli.tar.gz" -C "$DIST_DIR" moondream_cli
+        echo "✔ cli → $DIST_DIR"
+    fi
 }
 
 ##############################################################################
@@ -239,6 +263,7 @@ prepare_dev() {
     build_cli
     build_inference
     build_hypervisor
+
     local DEV_DIR
     if [[ "$PLATFORM" = "mac" ]]; then
         DEV_DIR="$HOME/Library/MoondreamStation"
@@ -247,7 +272,10 @@ prepare_dev() {
     else
         echo "Unknown platform '$PLATFORM' (mac|ubuntu)" >&2; exit 1
     fi
+    
+    # Use version for directory structure or default to v0.0.1 if no version specified
     mkdir -p "$DEV_DIR/inference/v0.0.1"
+    
     # copy hypervisor supplements
     local HYP_SRC="../output/moondream-station-files"
     local HYP_FILES=(
@@ -258,11 +286,18 @@ prepare_dev() {
     for f in "${HYP_FILES[@]}"; do
         cp "$HYP_SRC/$f" "$DEV_DIR/"
     done
+
     # copy CLI dir
     cp -r "../output/moondream-cli/moondream_cli" "$DEV_DIR/"
+
     # copy inference build
     cp -r "../output/inference_bootstrap" "$DEV_DIR/inference/v0.0.1/"
-    echo "✔ dev sandbox ready → $DEV_DIR (${VERSION})"
+    
+    if [ -n "$VERSION" ]; then
+        echo "✔ dev sandbox ready → $DEV_DIR (${VERSION})"
+    else
+        echo "✔ dev sandbox ready → $DEV_DIR"
+    fi
 }
 
 ##############################################################################
@@ -272,7 +307,6 @@ run_station() {
     cd ..
     ./output/moondream_station/moondream_station
 }
-
 ##############################################################################
 # dispatch
 ##############################################################################
