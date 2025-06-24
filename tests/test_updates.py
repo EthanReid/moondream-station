@@ -22,91 +22,19 @@ Each manifest_v00X.json should contain:
 """
 
 import pexpect
-import shutil
 import os
 import logging
 import time
 import requests
 import re
-from pathlib import Path
-from utils import DebugTracer, TracedProcess, setup_trace_logging
-
-# Import capability testing functions
-try:
-    from test_capability import test_model_capabilities, parse_model_list_output
-    CAPABILITY_TESTING_AVAILABLE = True
-except ImportError:
-    CAPABILITY_TESTING_AVAILABLE = False
-    logging.warning("test_capability.py not found - capability testing disabled")
-
-# Import startup validation functions
-try:
-    from utils import is_port_occupied, validate_files
-    STARTUP_VALIDATION_AVAILABLE = True
-except ImportError:
-    STARTUP_VALIDATION_AVAILABLE = False
-    logging.warning("utils functions not found - startup validation disabled")
-
-MANIFEST_DIR = "./test_manifests"
-
-class Timeouts:
-    QUICK = 15
-    STANDARD = 60
-    STARTUP = 60
-    UPDATE = 300
-    RECOVERY = 30
-
-class Patterns:
-    PROMPT = 'moondream>'
-    EXIT_MESSAGE = r'Exiting Moondream CLI'
-    
-    UPDATE_COMPLETION = {
-        'model': r'All component updates have been processed',
-        'cli': r'CLI update complete\. Please restart the CLI',
-        'bootstrap': r'(Restart.*for update|Starting update process)',
-        'hypervisor_complete': r'Hypervisor.*update.*completed',
-        'hypervisor_off': r'Server status: Hypervisor: off, Inference: off'
-    }
-    
-    STATUS_INDICATORS = {
-        'up_to_date': 'Up to date',
-        'update_available': 'Update available'
-    }
-    
-    COMPONENT_NAMES = ['Bootstrap', 'Hypervisor', 'CLI', 'Model']
-    
-    MODEL_FIELDS = {
-        'name': 'Model: ',
-        'release_date': 'Release Date: ',
-        'size': 'Size: ',
-        'notes': 'Notes: '
-    }
-    
-    MODEL_CHANGE = {
-        'success': r'Model successfully changed to',
-        'initialization': r'Model initialization completed successfully'
-    }
-    
-    VERSION_PATTERNS = {
-        'check_updates': {
-            'bootstrap': r'Bootstrap:\s+(v\d+\.\d+\.\d+)\s+-\s+(.+)',
-            'hypervisor': r'Hypervisor:\s+(v\d+\.\d+\.\d+)\s+-\s+(.+)',
-            'cli': r'CLI:\s+(v\d+\.\d+\.\d+)\s+-\s+(.+)',
-            'model': r'Model:\s+([^-]+)\s+-\s+(.+)'
-        },
-        'get_config': {
-            'bootstrap': r'active_bootstrap:\s+(v\d+\.\d+\.\d+)',
-            'hypervisor': r'active_hypervisor:\s+(v\d+\.\d+\.\d+)',
-            'cli': r'active_cli:\s+(v\d+\.\d+\.\d+)',
-            'inference_client': r'active_inference_client:\s+(v\d+\.\d+\.\d+)',
-            'model': r'active_model:\s+(.+)'
-        }
-    }
-
-class Config:
-    MANIFEST_PATH = os.path.expanduser("~/.local/share/MoondreamStation/manifest.py")
-    MANIFEST_URL_PATTERN = r'MANIFEST_URL\s*=\s*["\']([^"\']+)["\']'
-    MODEL_CATEGORY = '2b'
+from utils import DebugTracer
+from config import Config, Timeouts
+from server import Server
+from manifest import Manifest
+from commands import Commands
+from parser import Parser
+from test_capability import test_model_capabilities, parse_model_list_output
+from utils import is_port_occupied, validate_files, setup_trace_logging
 
 def setup_logging(verbose=False, debug_trace=False):
     logger = logging.getLogger()
@@ -124,293 +52,6 @@ def setup_logging(verbose=False, debug_trace=False):
         console_handler.setLevel(logging.DEBUG)
         console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
         logger.addHandler(console_handler)
-
-class Server:
-    def __init__(self, executable='./moondream_station', args=None):
-        self.executable = executable
-        self.args = args or []
-        self.process = None
-    
-    @DebugTracer.log_operation
-    def start(self):
-        cmd = [self.executable] + self.args
-        DebugTracer.log(f"Starting server command: {' '.join(cmd)}", "SERVER")
-        logging.debug(f"Starting server: {' '.join(cmd)}")
-        time.sleep(2)
-        try:
-            raw_process = pexpect.spawn(' '.join(cmd))
-            self.process = TracedProcess(raw_process)
-            DebugTracer.log("Waiting for startup prompt", "SERVER")
-            self.process.expect(Patterns.PROMPT, timeout=Timeouts.STARTUP)
-            DebugTracer.log("Server started successfully", "SERVER")
-            logging.debug("Server started successfully")
-            return self.process
-        except pexpect.EOF:
-            output = self.process.before.decode() if self.process else 'None'
-            DebugTracer.log(f"Server startup failed (EOF): {output}", "SERVER")
-            logging.error(f"Server failed to start (EOF). Output: {output}")
-            raise
-        except pexpect.TIMEOUT:
-            output = self.process.before.decode() if self.process else 'None'
-            DebugTracer.log(f"Server startup timeout: {output}", "SERVER")
-            logging.error(f"Server startup timeout. Output: {output}")
-            raise
-    
-    @DebugTracer.log_operation
-    def stop(self):
-        if not self.process:
-            DebugTracer.log("No process to stop", "SERVER")
-            return
-        try:
-            DebugTracer.log("Sending exit command", "SERVER")
-            self.process.sendline('exit')
-            self.process.expect(Patterns.EXIT_MESSAGE, timeout=Timeouts.QUICK)
-            if self.process.isalive():
-                DebugTracer.log("Force closing process", "SERVER")
-                self.process.close(force=True)
-            DebugTracer.log("Server stopped successfully", "SERVER")
-            logging.debug("Server stopped successfully")
-        except:
-            if self.process.isalive():
-                DebugTracer.log("Force stopping process after error", "SERVER")
-                self.process.close(force=True)
-            DebugTracer.log("Server force stopped", "SERVER")
-            logging.debug("Server force stopped")
-    
-    @DebugTracer.log_operation
-    def restart(self):
-        DebugTracer.log("Restarting server", "SERVER")
-        logging.debug("Restarting server")
-        self.stop()
-        time.sleep(2)
-        return self.start()
-
-class Manifest:
-    @staticmethod
-    @DebugTracer.log_operation
-    def update_version(version):
-        DebugTracer.log(f"Updating manifest to version {version:03d}", "MANIFEST")
-        manifest_file = Path(MANIFEST_DIR) / "manifest.json"
-        version_file = Path(MANIFEST_DIR) / f"manifest_v{version:03d}.json"
-        if not version_file.exists():
-            DebugTracer.log(f"Version file not found: {version_file}", "MANIFEST")
-            raise FileNotFoundError(f"Version manifest {version_file} not found")
-        
-        DebugTracer.log(f"Copying {version_file} to {manifest_file}", "MANIFEST")
-        shutil.copy2(version_file, manifest_file)
-        DebugTracer.log(f"Manifest update completed", "MANIFEST")
-        logging.debug(f"Updated manifest.json to version {version:03d}")
-    
-    @staticmethod
-    @DebugTracer.log_operation
-    def verify_environment():
-        DebugTracer.log(f"Verifying test environment in {MANIFEST_DIR}", "MANIFEST")
-        manifest_dir = Path(MANIFEST_DIR)
-        if not manifest_dir.exists():
-            DebugTracer.log(f"Manifest directory not found: {MANIFEST_DIR}", "MANIFEST")
-            raise FileNotFoundError(f"Manifest directory {MANIFEST_DIR} not found")
-        
-        required = ['manifest_v001.json', 'manifest_v002.json', 'manifest_v003.json', 'manifest_v004.json', 'manifest_v005.json']
-        missing = []
-        for manifest_file in required:
-            file_path = manifest_dir / manifest_file
-            if not file_path.exists():
-                missing.append(manifest_file)
-                DebugTracer.log(f"Missing required file: {file_path}", "MANIFEST")
-            else:
-                DebugTracer.log(f"Found required file: {file_path}", "MANIFEST")
-        
-        if missing:
-            DebugTracer.log(f"Missing files: {missing}", "MANIFEST")
-            raise FileNotFoundError(f"Missing manifest files: {missing}")
-        
-        DebugTracer.log("Test environment verification completed", "MANIFEST")
-        logging.debug("Test environment verified")
-    
-    @staticmethod
-    def get_expected_versions(version):
-        import json
-        version_file = Path(MANIFEST_DIR) / f"manifest_v{version:03d}.json"
-        if not version_file.exists():
-            logging.warning(f"Manifest file {version_file} not found")
-            return {}
-        
-        try:
-            with open(version_file, 'r') as f:
-                manifest_data = json.load(f)
-            
-            expected = {
-                'bootstrap': manifest_data.get('bootstrap_version'),
-                'hypervisor': manifest_data.get('hypervisor_version'),
-                'cli': manifest_data.get('cli_version'),
-                'inference_client': manifest_data.get('inference_client_version'),
-                'models': manifest_data.get('models', {})
-            }
-            
-            DebugTracer.log(f"Expected versions from v{version:03d}: {expected}", "MANIFEST")
-            logging.debug(f"Expected versions from manifest v{version:03d}: {expected}")
-            return expected
-            
-        except Exception as e:
-            logging.error(f"Failed to read expected versions from {version_file}: {e}")
-            return {}
-
-class Commands:
-    def __init__(self, process):
-        self.process = process
-    
-    @DebugTracer.log_command
-    def run(self, command, expect_pattern=None, timeout=Timeouts.STANDARD, expect_exit=False):
-        DebugTracer.log(f"Executing command: {command}", "COMMAND")
-        logging.debug(f"Running: {command}")
-        self.process.sendline(command)
-        
-        if expect_exit:
-            try:
-                if expect_pattern:
-                    DebugTracer.log(f"Waiting for exit pattern: {expect_pattern}", "COMMAND")
-                    self.process.expect(expect_pattern, timeout=timeout)
-                    logging.debug(f"Found expected pattern: {expect_pattern}")
-                time.sleep(3)
-                output = self.process.before.decode().strip() if hasattr(self.process, 'before') else ""
-                DebugTracer.log(f"Command completed with exit, output length: {len(output)}", "COMMAND")
-                logging.debug("Server exited as expected")
-                return output
-            except pexpect.EOF:
-                output = self.process.before.decode().strip() if hasattr(self.process, 'before') else ""
-                DebugTracer.log(f"Command completed with EOF, output length: {len(output)}", "COMMAND")
-                logging.debug("Server exited (EOF)")
-                return output
-            except pexpect.TIMEOUT:
-                logging.warning(f"Timeout waiting for pattern: {expect_pattern}")
-                output = self.process.before.decode().strip() if hasattr(self.process, 'before') else ""
-                DebugTracer.log(f"Command timeout, output length: {len(output)}", "COMMAND")
-                return output
-        else:
-            if expect_pattern:
-                try:
-                    DebugTracer.log(f"Waiting for pattern: {expect_pattern}", "COMMAND")
-                    self.process.expect(expect_pattern, timeout=timeout)
-                except pexpect.TIMEOUT:
-                    logging.warning(f"Timeout waiting for pattern: {expect_pattern}")
-            DebugTracer.log("Waiting for prompt", "COMMAND")
-            self.process.expect(Patterns.PROMPT, timeout=timeout)
-            output = self.process.before.decode().strip()
-            DebugTracer.log(f"Command completed, output length: {len(output)}", "COMMAND")
-            logging.debug(f"Command output: {output}")
-            return output
-    
-    @DebugTracer.log_command
-    def update_manifest(self):
-        return self.run('admin update-manifest', timeout=Timeouts.STANDARD)
-    
-    @DebugTracer.log_command
-    def check_updates(self):
-        return self.run('admin check-updates')
-    
-    @DebugTracer.log_command
-    def model_list(self):
-        return self.run('admin model-list')
-    
-    @DebugTracer.log_command  
-    def model_use(self, model_name):
-        return self.run(f'admin model-use {model_name} --confirm', timeout=Timeouts.UPDATE)
-    
-    @DebugTracer.log_command
-    def status(self):
-        return self.run('admin status')
-    
-    @DebugTracer.log_command
-    def get_config(self):
-        return self.run('admin get-config')
-
-class Parser:
-    @staticmethod
-    def parse_updates(output):
-        components = {}
-        lines = [line.strip() for line in output.replace('\r', '\n').split('\n') 
-                if line.strip() and not line.strip().startswith('Checking for') and not line.strip().startswith('admin')]
-        
-        for line in lines:
-            if ':' in line and (Patterns.STATUS_INDICATORS['up_to_date'] in line or 
-                               Patterns.STATUS_INDICATORS['update_available'] in line):
-                parts = line.split(':', 1)
-                if len(parts) >= 2:
-                    component = parts[0].strip()
-                    status_part = parts[1].strip()
-                    
-                    for name in Patterns.COMPONENT_NAMES:
-                        if name.lower() in component.lower():
-                            component = name
-                            break
-                    
-                    if Patterns.STATUS_INDICATORS['update_available'] in status_part:
-                        components[component] = Patterns.STATUS_INDICATORS['update_available']
-                    elif Patterns.STATUS_INDICATORS['up_to_date'] in status_part:
-                        components[component] = Patterns.STATUS_INDICATORS['up_to_date']
-        
-        logging.debug(f"Parsed components: {components}")
-        return components
-    
-    @staticmethod
-    def parse_versions_from_check_updates(output):
-        versions = {}
-        for line in output.split('\n'):
-            line = line.strip()
-            for component, pattern in Patterns.VERSION_PATTERNS['check_updates'].items():
-                match = re.search(pattern, line)
-                if match:
-                    if component == 'model':
-                        versions[component] = match.group(1).strip()
-                    else:
-                        versions[component] = match.group(1)
-                    break
-        
-        logging.debug(f"Parsed versions from check-updates: {versions}")
-        return versions
-    
-    @staticmethod
-    def parse_versions_from_config(output):
-        versions = {}
-        for line in output.split('\n'):
-            line = line.strip()
-            for component, pattern in Patterns.VERSION_PATTERNS['get_config'].items():
-                match = re.search(pattern, line)
-                if match:
-                    versions[component] = match.group(1).strip()
-                    break
-        
-        logging.debug(f"Parsed versions from get-config: {versions}")
-        return versions
-    
-    @staticmethod
-    def parse_models(output):
-        models = {}
-        current_model = None
-        for line in output.split('\n'):
-            line = line.strip()
-            if line.startswith(Patterns.MODEL_FIELDS['name']):
-                current_model = line[len(Patterns.MODEL_FIELDS['name']):].strip()
-                models[current_model] = {}
-            elif current_model and line.startswith(Patterns.MODEL_FIELDS['release_date']):
-                models[current_model]['release_date'] = line[len(Patterns.MODEL_FIELDS['release_date']):].strip()
-            elif current_model and line.startswith(Patterns.MODEL_FIELDS['size']):
-                models[current_model]['model_size'] = line[len(Patterns.MODEL_FIELDS['size']):].strip()
-            elif current_model and line.startswith(Patterns.MODEL_FIELDS['notes']):
-                models[current_model]['notes'] = line[len(Patterns.MODEL_FIELDS['notes']):].strip()
-        logging.debug(f"Parsed models: {list(models.keys())}")
-        return models
-    
-    @staticmethod
-    def parse_config(output):
-        config = {}
-        for line in output.split('\n'):
-            line = line.strip()
-            if ':' in line and not line.startswith('Getting server configuration'):
-                key, value = line.split(':', 1)
-                config[key.strip()] = value.strip()
-        logging.debug(f"Parsed config: {config}")
-        return config
 
 class Validator:
     @staticmethod
@@ -593,7 +234,7 @@ class Validator:
         DebugTracer.log(f"Actual versions: {actual_versions}", "VALIDATOR")
         
         if components_to_check is None:
-            components_to_check = ['bootstrap', 'hypervisor', 'cli', 'inference_client']
+            components_to_check = Config.VALIDAITON_COMPONENTS
         
         all_valid = True
         for component in components_to_check:
@@ -642,7 +283,7 @@ class Validator:
         DebugTracer.log(f"Switching to model: {model_name}", "VALIDATOR")
         output = cmd.model_use(model_name)
         
-        if Patterns.MODEL_CHANGE['initialization'] in output:
+        if Config.MODEL_CHANGE['success'] in output:
             DebugTracer.log(f"Model switch command succeeded", "VALIDATOR")
             logging.debug(f"Model switch to {model_name} succeeded")
         else:
@@ -697,7 +338,7 @@ class Updater:
         logging.debug(f"Executing bootstrap update: {command}")
         try:
             cmd = Commands(self.server.process)
-            cmd.run(command, expect_pattern=Patterns.UPDATE_COMPLETION['bootstrap'], 
+            cmd.run(command, expect_pattern=Config.UPDATE_COMPLETION['bootstrap'], 
                    timeout=Timeouts.UPDATE, expect_exit=True)
             DebugTracer.log("Bootstrap update command completed", "UPDATER")
             logging.debug("Bootstrap update completed successfully")
@@ -736,23 +377,23 @@ class Updater:
         try:
             self.server.process.sendline(command)
             try:
-                DebugTracer.log("Waiting for hypervisor update completion patterns", "UPDATER")
+                DebugTracer.log("Waiting for hypervisor update completion Config", "UPDATER")
                 index = self.server.process.expect([
-                    Patterns.UPDATE_COMPLETION['hypervisor_complete'],
-                    Patterns.UPDATE_COMPLETION['hypervisor_off'],
-                    Patterns.PROMPT
+                    Config.UPDATE_COMPLETION['hypervisor_complete'],
+                    Config.UPDATE_COMPLETION['hypervisor_off'],
+                    Config.PROMPT
                 ], timeout=Timeouts.UPDATE)
                 
                 if index == 0:
                     DebugTracer.log("Hypervisor update completed normally", "UPDATER")
                     logging.debug("Hypervisor update completed")
-                    self.server.process.expect(Patterns.PROMPT, timeout=Timeouts.QUICK)
+                    self.server.process.expect(Config.PROMPT, timeout=Timeouts.QUICK)
                 elif index == 1:
                     DebugTracer.log("Hypervisor off state detected - exiting as expected", "UPDATER")
                     logging.debug("Found 'Hypervisor: off' state - exiting as expected")
                     self.server.process.sendline('exit')
                     try:
-                        self.server.process.expect(Patterns.EXIT_MESSAGE, timeout=Timeouts.QUICK)
+                        self.server.process.expect(Config.EXIT_MESSAGE, timeout=Timeouts.QUICK)
                         DebugTracer.log("Clean exit after hypervisor update", "UPDATER")
                         logging.debug("Exited CLI after hypervisor update")
                     except (pexpect.TIMEOUT, pexpect.EOF):
@@ -766,7 +407,7 @@ class Updater:
                 logging.warning("Timeout waiting for hypervisor update - exiting")
                 self.server.process.sendline('exit')
                 try:
-                    self.server.process.expect(Patterns.EXIT_MESSAGE, timeout=Timeouts.QUICK)
+                    self.server.process.expect(Config.EXIT_MESSAGE, timeout=Timeouts.QUICK)
                 except pexpect.TIMEOUT:
                     DebugTracer.log("Timeout during forced exit", "UPDATER")
                     pass
@@ -804,22 +445,22 @@ class Updater:
         try:
             self.server.process.sendline(command)
             try:
-                patterns = {
-                    "model": Patterns.UPDATE_COMPLETION['model'],
-                    "cli": Patterns.UPDATE_COMPLETION['cli'],
-                    "general": f"({Patterns.UPDATE_COMPLETION['model']}|{Patterns.UPDATE_COMPLETION['cli']})"
+                completion_patterns = {  # ← Different variable name
+                    "model": Config.UPDATE_COMPLETION['model'],
+                    "cli": Config.UPDATE_COMPLETION['cli'], 
+                    "general": f"({Config.UPDATE_COMPLETION['model']}|{Config.UPDATE_COMPLETION['cli']})"
                 }
                 
-                completion_pattern = patterns.get(update_type, patterns["general"])
+                completion_pattern = completion_patterns.get(update_type, completion_patterns["general"])
                 DebugTracer.log(f"Waiting for completion pattern: {completion_pattern}", "UPDATER")
-                index = self.server.process.expect([completion_pattern, Patterns.PROMPT], timeout=Timeouts.UPDATE)
+                index = self.server.process.expect([completion_pattern, Config.PROMPT], timeout=Timeouts.UPDATE)
                 
                 if index == 0:
                     DebugTracer.log(f"Full update ({update_type}) completion message found", "UPDATER")
                     logging.debug(f"Found completion message for {update_type} update - exiting")
                     self.server.process.sendline('exit')
                     try:
-                        self.server.process.expect(Patterns.EXIT_MESSAGE, timeout=Timeouts.QUICK)
+                        self.server.process.expect(Config.EXIT_MESSAGE, timeout=Timeouts.QUICK)
                         DebugTracer.log(f"Clean exit after {update_type} update", "UPDATER")
                         logging.debug(f"Exited CLI after {update_type} update")
                     except (pexpect.TIMEOUT, pexpect.EOF):
@@ -834,7 +475,7 @@ class Updater:
                 logging.warning(f"Timeout waiting for {update_type} update completion - exiting")
                 self.server.process.sendline('exit')
                 try:
-                    self.server.process.expect(Patterns.EXIT_MESSAGE, timeout=Timeouts.QUICK)
+                    self.server.process.expect(Config.EXIT_MESSAGE, timeout=Timeouts.QUICK)
                 except pexpect.TIMEOUT:
                     DebugTracer.log("Timeout during forced exit", "UPDATER")
                     pass
@@ -876,11 +517,6 @@ class TestSuite:
     @DebugTracer.log_operation
     def validate_startup_environment(self, backend_path="~/.local/share/MoondreamStation", checksum_path="expected_checksum.json"):
         """Validate startup environment - file checksums and port states (v001 only)."""
-        if not STARTUP_VALIDATION_AVAILABLE:
-            DebugTracer.log("Startup validation functions not available - skipping", "STARTUP")
-            logging.warning("Startup validation functions not available - skipping")
-            return True
-        
         DebugTracer.log("Starting startup environment validation", "STARTUP")
         logging.debug("=== Startup Environment Validation ===")
         
@@ -914,8 +550,6 @@ class TestSuite:
     @DebugTracer.log_operation
     def validate_post_startup_state(self):
         """Validate server state after startup (v001 only)."""
-        if not STARTUP_VALIDATION_AVAILABLE:
-            return True
         
         DebugTracer.log("Validating post-startup server state", "STARTUP")
         logging.debug("=== Post-Startup State Validation ===")
@@ -947,8 +581,6 @@ class TestSuite:
     
     @DebugTracer.log_operation
     def run_capability_tests(self):
-        if not self.test_capabilities or not CAPABILITY_TESTING_AVAILABLE:
-            return True
         
         DebugTracer.log("Starting capability testing", "CAPABILITY")
         logging.debug("=== Running Capability Tests ===")
@@ -1037,9 +669,9 @@ class TestSuite:
         cmd.update_manifest()
         
         success = Validator.check_updates(self.server.process, "All Up to Date (v001)", {
-            'Bootstrap': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Hypervisor': Patterns.STATUS_INDICATORS['up_to_date'], 
-            'CLI': Patterns.STATUS_INDICATORS['up_to_date']
+            'Bootstrap': Config.STATUS_INDICATORS['up_to_date'],
+            'Hypervisor': Config.STATUS_INDICATORS['up_to_date'], 
+            'CLI': Config.STATUS_INDICATORS['up_to_date']
         })
         all_passed = all_passed and success
         
@@ -1060,9 +692,9 @@ class TestSuite:
         Manifest.update_version(2)
         cmd.update_manifest()
         success = Validator.check_updates(self.server.process, "Bootstrap Update Available (v002)", {
-            'Bootstrap': Patterns.STATUS_INDICATORS['update_available'],
-            'Hypervisor': Patterns.STATUS_INDICATORS['up_to_date'],
-            'CLI': Patterns.STATUS_INDICATORS['up_to_date']
+            'Bootstrap': Config.STATUS_INDICATORS['update_available'],
+            'Hypervisor': Config.STATUS_INDICATORS['up_to_date'],
+            'CLI': Config.STATUS_INDICATORS['up_to_date']
         })
         all_passed = all_passed and success
         
@@ -1089,10 +721,10 @@ class TestSuite:
         cmd = Commands(self.server.process)
         cmd.update_manifest()
         success = Validator.check_updates(self.server.process, "Hypervisor + Model Updates Available (v003)", {
-            'Bootstrap': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Hypervisor': Patterns.STATUS_INDICATORS['update_available'],
-            'CLI': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Model': Patterns.STATUS_INDICATORS['update_available']
+            'Bootstrap': Config.STATUS_INDICATORS['up_to_date'],
+            'Hypervisor': Config.STATUS_INDICATORS['update_available'],
+            'CLI': Config.STATUS_INDICATORS['up_to_date'],
+            'Model': Config.STATUS_INDICATORS['update_available']
         })
         all_passed = all_passed and success
         
@@ -1117,10 +749,10 @@ class TestSuite:
         
         cmd = Commands(self.server.process)
         success = Validator.check_updates(self.server.process, "After Hypervisor Update in v003", {
-            'Bootstrap': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Hypervisor': Patterns.STATUS_INDICATORS['up_to_date'],
-            'CLI': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Model': Patterns.STATUS_INDICATORS['update_available']
+            'Bootstrap': Config.STATUS_INDICATORS['up_to_date'],
+            'Hypervisor': Config.STATUS_INDICATORS['up_to_date'],
+            'CLI': Config.STATUS_INDICATORS['up_to_date'],
+            'Model': Config.STATUS_INDICATORS['update_available']
         })
         all_passed = all_passed and success
         
@@ -1131,10 +763,10 @@ class TestSuite:
         
         cmd = Commands(self.server.process)
         success = Validator.check_updates(self.server.process, "After Model Update in v003", {
-            'Bootstrap': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Hypervisor': Patterns.STATUS_INDICATORS['up_to_date'],
-            'CLI': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Model': Patterns.STATUS_INDICATORS['up_to_date']
+            'Bootstrap': Config.STATUS_INDICATORS['up_to_date'],
+            'Hypervisor': Config.STATUS_INDICATORS['up_to_date'],
+            'CLI': Config.STATUS_INDICATORS['up_to_date'],
+            'Model': Config.STATUS_INDICATORS['up_to_date']
         })
         all_passed = all_passed and success
         
@@ -1159,10 +791,10 @@ class TestSuite:
         cmd = Commands(self.server.process)
         cmd.update_manifest()
         success = Validator.check_updates(self.server.process, "CLI Update Available (v004)", {
-            'Bootstrap': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Hypervisor': Patterns.STATUS_INDICATORS['up_to_date'],
-            'CLI': Patterns.STATUS_INDICATORS['update_available'],
-            'Model': Patterns.STATUS_INDICATORS['up_to_date']
+            'Bootstrap': Config.STATUS_INDICATORS['up_to_date'],
+            'Hypervisor': Config.STATUS_INDICATORS['up_to_date'],
+            'CLI': Config.STATUS_INDICATORS['update_available'],
+            'Model': Config.STATUS_INDICATORS['up_to_date']
         })
         all_passed = all_passed and success
         
@@ -1173,10 +805,10 @@ class TestSuite:
         
         cmd = Commands(self.server.process)
         success = Validator.check_updates(self.server.process, "After CLI Update (v004)", {
-            'Bootstrap': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Hypervisor': Patterns.STATUS_INDICATORS['up_to_date'],
-            'CLI': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Model': Patterns.STATUS_INDICATORS['up_to_date']
+            'Bootstrap': Config.STATUS_INDICATORS['up_to_date'],
+            'Hypervisor': Config.STATUS_INDICATORS['up_to_date'],
+            'CLI': Config.STATUS_INDICATORS['up_to_date'],
+            'Model': Config.STATUS_INDICATORS['up_to_date']
         })
         all_passed = all_passed and success
         
@@ -1196,10 +828,10 @@ class TestSuite:
         
         cmd = Commands(self.server.process)
         success = Validator.check_updates(self.server.process, "After CLI Update (v004)", {
-            'Bootstrap': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Hypervisor': Patterns.STATUS_INDICATORS['up_to_date'],
-            'CLI': Patterns.STATUS_INDICATORS['up_to_date'],
-            'Model': Patterns.STATUS_INDICATORS['up_to_date']
+            'Bootstrap': Config.STATUS_INDICATORS['up_to_date'],
+            'Hypervisor': Config.STATUS_INDICATORS['up_to_date'],
+            'CLI': Config.STATUS_INDICATORS['up_to_date'],
+            'Model': Config.STATUS_INDICATORS['up_to_date']
         })
         all_passed = all_passed and success
         
@@ -1250,11 +882,7 @@ def main():
         DebugTracer.log("=== COMPREHENSIVE DEBUG TRACING ENABLED ===", "SYSTEM")
         DebugTracer.log(f"Command line args: {vars(args)}", "SYSTEM")
         DebugTracer.log(f"Server args: {server_args}", "SYSTEM")
-    
-    if args.test_capabilities and not CAPABILITY_TESTING_AVAILABLE:
-        logging.error("Capability testing requested but test_capability.py not available")
-        exit(1)
-    
+
     suite = TestSuite(args.executable, server_args, 
                      cleanup=not args.no_cleanup, 
                      test_capabilities=args.test_capabilities)
