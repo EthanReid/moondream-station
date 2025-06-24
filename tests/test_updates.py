@@ -39,6 +39,14 @@ except ImportError:
     CAPABILITY_TESTING_AVAILABLE = False
     logging.warning("test_capability.py not found - capability testing disabled")
 
+# Import startup validation functions
+try:
+    from utils import is_port_occupied, validate_files
+    STARTUP_VALIDATION_AVAILABLE = True
+except ImportError:
+    STARTUP_VALIDATION_AVAILABLE = False
+    logging.warning("utils functions not found - startup validation disabled")
+
 MANIFEST_DIR = "./test_manifests"
 
 class Timeouts:
@@ -565,7 +573,6 @@ class Validator:
         DebugTracer.log(f"Validating versions for manifest v{manifest_version:03d}", "VALIDATOR")
         logging.debug(f"=== Validating Versions (v{manifest_version:03d}) ===")
         
-        # Get expected versions from manifest
         expected = Manifest.get_expected_versions(manifest_version)
         if not expected:
             DebugTracer.log("No expected versions found - skipping validation", "VALIDATOR")
@@ -574,21 +581,17 @@ class Validator:
         
         cmd = Commands(process)
         
-        # Get actual versions from server
         check_updates_output = cmd.check_updates()
         actual_versions = Parser.parse_versions_from_check_updates(check_updates_output)
         
-        # Also get config for inference client version
         config_output = cmd.get_config()
         config_versions = Parser.parse_versions_from_config(config_output)
         
-        # Merge version info
         actual_versions.update(config_versions)
         
         DebugTracer.log(f"Expected versions: {expected}", "VALIDATOR")
         DebugTracer.log(f"Actual versions: {actual_versions}", "VALIDATOR")
         
-        # Default to checking all components if none specified
         if components_to_check is None:
             components_to_check = ['bootstrap', 'hypervisor', 'cli', 'inference_client']
         
@@ -619,6 +622,9 @@ class Validator:
         DebugTracer.log(f"Version validation result: {'PASS' if all_valid else 'FAIL'}", "VALIDATOR")
         logging.debug(f"Version validation: {'PASS' if all_valid else 'FAIL'}")
         return all_valid
+
+    @staticmethod
+    def model_switch(process, model_name, expected_inference_client=None):
         DebugTracer.log(f"Testing model switch to: {model_name}", "VALIDATOR")
         logging.debug(f"=== Testing Model Switch to {model_name} ===")
         
@@ -865,6 +871,79 @@ class TestSuite:
         self.cleanup = cleanup
         self.test_capabilities = test_capabilities
         self.updater = None
+        self.pre_startup_ports = {}
+    
+    @DebugTracer.log_operation
+    def validate_startup_environment(self, backend_path="~/.local/share/MoondreamStation", checksum_path="expected_checksum.json"):
+        """Validate startup environment - file checksums and port states (v001 only)."""
+        if not STARTUP_VALIDATION_AVAILABLE:
+            DebugTracer.log("Startup validation functions not available - skipping", "STARTUP")
+            logging.warning("Startup validation functions not available - skipping")
+            return True
+        
+        DebugTracer.log("Starting startup environment validation", "STARTUP")
+        logging.debug("=== Startup Environment Validation ===")
+        
+        try:
+            # Check port occupancy before server start
+            pre_hypervisor = is_port_occupied(2020)
+            pre_inference = is_port_occupied(20200)
+            self.pre_startup_ports = {
+                'hypervisor': pre_hypervisor,
+                'inference': pre_inference
+            }
+            
+            DebugTracer.log(f"Pre-startup port check - Hypervisor: {'occupied' if pre_hypervisor else 'free'}, Inference: {'occupied' if pre_inference else 'free'}", "STARTUP")
+            logging.debug(f"Hypervisor Port (2020) was {'occupied' if pre_hypervisor else 'not occupied'} before server startup")
+            logging.debug(f"Inference Server Port (20200) was {'occupied' if pre_inference else 'not occupied'} before server startup")
+            
+            # Validate backend files
+            DebugTracer.log(f"Validating backend files in {backend_path}", "STARTUP")
+            logging.debug(f"Validating backend files in {backend_path}")
+            validate_files(os.path.expanduser(backend_path), checksum_path)
+            DebugTracer.log("Backend file validation completed", "STARTUP")
+            logging.debug("Backend file validation completed successfully")
+            
+            return True
+            
+        except Exception as e:
+            DebugTracer.log(f"Startup environment validation failed: {str(e)}", "STARTUP")
+            logging.error(f"Startup environment validation failed: {e}")
+            return False
+    
+    @DebugTracer.log_operation
+    def validate_post_startup_state(self):
+        """Validate server state after startup (v001 only)."""
+        if not STARTUP_VALIDATION_AVAILABLE:
+            return True
+        
+        DebugTracer.log("Validating post-startup server state", "STARTUP")
+        logging.debug("=== Post-Startup State Validation ===")
+        
+        try:
+            # Check current port occupancy
+            current_hypervisor = is_port_occupied(2020)
+            current_inference = is_port_occupied(20200)
+            
+            DebugTracer.log(f"Post-startup port check - Hypervisor: {'occupied' if current_hypervisor else 'free'}, Inference: {'occupied' if current_inference else 'free'}", "STARTUP")
+            logging.debug(f"Hypervisor Port (2020) is currently {'occupied' if current_hypervisor else 'not occupied'}")
+            logging.debug(f"Inference Server Port (20200) is currently {'occupied' if current_inference else 'not occupied'}")
+            
+            # Server should be running, so ports should be occupied
+            if not current_hypervisor:
+                DebugTracer.log("Warning: Hypervisor port not occupied after startup", "STARTUP")
+                logging.warning("Hypervisor port (2020) not occupied - server may not be running properly")
+            
+            if not current_inference:
+                DebugTracer.log("Warning: Inference port not occupied after startup", "STARTUP") 
+                logging.warning("Inference port (20200) not occupied - inference server may not be running")
+            
+            return True
+            
+        except Exception as e:
+            DebugTracer.log(f"Post-startup state validation failed: {str(e)}", "STARTUP")
+            logging.error(f"Post-startup state validation failed: {e}")
+            return False
     
     @DebugTracer.log_operation
     def run_capability_tests(self):
@@ -925,9 +1004,18 @@ class TestSuite:
             logging.error(f"Test environment verification failed: {e}")
             return False
         
+        # Validate startup environment before server start
+        if not self.validate_startup_environment():
+            logging.error("Startup environment validation failed")
+            return False
+        
         Manifest.update_version(1)
         self.server.start()
         self.updater = Updater(self.server)
+        
+        # Validate post-startup state
+        if not self.validate_post_startup_state():
+            logging.warning("Post-startup state validation failed - continuing with tests")
         
         try:
             success = self._execute_test_sequence()
