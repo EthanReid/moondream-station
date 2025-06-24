@@ -1,26 +1,3 @@
-"""
-Moondream Station Update Testing Suite
-
-This suite tests incremental updates across multiple manifest versions.
-
-Expected Manifest File Structure:
-Each manifest_v00X.json should contain:
-{
-    "bootstrap_version": "v0.0.X",
-    "hypervisor_version": "v0.0.X", 
-    "cli_version": "v0.0.X",
-    "inference_client_version": "v0.0.X",
-    "models": {
-        "ModelName": {
-            "release_date": "2025-XX-XX",
-            "size": "2B",
-            "notes": "Description",
-            "inference_client_version": "v0.0.X"  // Required for inference client testing
-        }
-    }
-}
-"""
-
 import pexpect
 import os
 import logging
@@ -57,275 +34,194 @@ class Validator:
     @staticmethod
     @DebugTracer.log_operation
     def check_updates(process, scenario, expected):
-        DebugTracer.log(f"Validating scenario: {scenario}", "VALIDATOR")
-        logging.debug(f"=== {scenario} ===")
-        cmd = Commands(process)
-        output = cmd.check_updates()
-        actual = Parser.parse_updates(output)
+        log = lambda msg, level="debug": (
+            DebugTracer.log(msg, "VALIDATOR"),
+            getattr(logging, level)(msg)
+        )
         
-        DebugTracer.log(f"Expected: {expected}", "VALIDATOR")
-        DebugTracer.log(f"Actual: {actual}", "VALIDATOR")
+        log(f"Validating scenario: {scenario}")
+        actual = Parser.parse_updates(Commands(process).check_updates())
+        log(f"Expected: {expected}\nActual: {actual}")
         
-        success = True
-        for component, expected_status in expected.items():
-            actual_status = actual.get(component)
-            if actual_status == expected_status:
-                DebugTracer.log(f"✓ {component}: {actual_status}", "VALIDATOR")
-                logging.debug(f"{component}: {actual_status}")
-            else:
-                DebugTracer.log(f"✗ {component}: got '{actual_status}', expected '{expected_status}'", "VALIDATOR")
-                logging.error(f"{component}: got '{actual_status}', expected '{expected_status}'")
-                success = False
+        failed = []
+        for k, v in expected.items():
+            if actual.get(k) != v:
+                log(f"{k}: got '{actual.get(k)}', expected '{v}'", "error")
+                failed.append(k)
         
-        DebugTracer.log(f"Validation result: {'PASS' if success else 'FAIL'}", "VALIDATOR")
-        logging.debug(f"Check updates result: {'PASS' if success else 'FAIL'}")
+        success = not failed
+        log(f"Validation result: {'PASS' if success else 'FAIL'}")
         return success
     
     @staticmethod
     @DebugTracer.log_operation
     def model_list(process):
-        DebugTracer.log("Starting model list validation", "VALIDATOR")
-        logging.debug("=== Testing Model List ===")
-        cmd = Commands(process)
-        output = cmd.model_list()
-        models = Parser.parse_models(output)
+        log = lambda msg, level="debug": (
+            DebugTracer.log(msg, "VALIDATOR"),
+            getattr(logging, level)(msg)
+        )
         
-        DebugTracer.log(f"Checking manifest file: {Config.MANIFEST_PATH}", "VALIDATOR")
+        log("Starting model list validation")
+        models = Parser.parse_models(Commands(process).model_list())
+        
+        # Load manifest
         if not os.path.exists(Config.MANIFEST_PATH):
-            DebugTracer.log("Manifest file not found - skipping validation", "VALIDATOR")
-            logging.warning("manifest.py not found - skipping model list validation")
+            log("Manifest file not found - skipping validation", "warning")
             return True
         
-        with open(Config.MANIFEST_PATH, 'r') as f:
-            manifest_content = f.read()
+        with open(Config.MANIFEST_PATH) as f:
+            url_match = re.search(Config.MANIFEST_URL_PATTERN, f.read())
         
-        DebugTracer.log(f"Searching for manifest URL with pattern: {Config.MANIFEST_URL_PATTERN}", "VALIDATOR")
-        url_match = re.search(Config.MANIFEST_URL_PATTERN, manifest_content)
         if not url_match:
-            DebugTracer.log("MANIFEST_URL not found - skipping validation", "VALIDATOR")
-            logging.warning("MANIFEST_URL not found - skipping validation")
+            log("MANIFEST_URL not found - skipping validation", "warning")
             return True
         
-        manifest_url = url_match.group(1)
-        DebugTracer.log(f"Fetching manifest from: {manifest_url}", "VALIDATOR")
+        # Fetch manifest data
         try:
-            response = requests.get(manifest_url, timeout=10)
-            DebugTracer.log(f"HTTP response: {response.status_code}, content length: {len(response.content)}", "VALIDATOR")
-            manifest_data = response.json()
-            logging.debug(f"Fetched manifest from: {manifest_url}")
+            manifest_data = requests.get(url_match.group(1), timeout=10).json()
+            manifest_models = manifest_data.get('models', {}).get(Config.MODEL_CATEGORY, {})
         except Exception as e:
-            DebugTracer.log(f"Failed to fetch manifest: {str(e)}", "VALIDATOR")
-            logging.warning(f"Failed to fetch manifest: {e}")
+            log(f"Failed to fetch manifest: {e}", "warning")
             return True
         
-        manifest_models = manifest_data.get('models', {}).get(Config.MODEL_CATEGORY, {})
-        DebugTracer.log(f"Found {len(manifest_models)} models in manifest, {len(models)} in CLI", "VALIDATOR")
+        log(f"Found {len(manifest_models)} models in manifest, {len(models)} in CLI")
         
-        all_valid = True
-        for model_name, cli_data in models.items():
-            DebugTracer.log(f"Validating model: {model_name}", "VALIDATOR")
-            if model_name in manifest_models:
-                manifest_model = manifest_models[model_name]
-                matches = {
-                    'release_date': cli_data.get('release_date') == manifest_model.get('release_date'),
-                    'model_size': cli_data.get('model_size') == manifest_model.get('model_size'),
-                    'notes': cli_data.get('notes') == manifest_model.get('notes')
-                }
-                model_valid = all(matches.values())
-                all_valid = all_valid and model_valid
-                DebugTracer.log(f"Model '{model_name}': {'PASS' if model_valid else 'FAIL'}", "VALIDATOR")
-                logging.debug(f"Model '{model_name}': {'PASS' if model_valid else 'FAIL'}")
-                if not model_valid:
-                    for field, match in matches.items():
-                        if not match:
-                            expected_val = manifest_model.get(field)
-                            actual_val = cli_data.get(field)
-                            DebugTracer.log(f"  {field}: expected '{expected_val}', got '{actual_val}'", "VALIDATOR")
-                            logging.debug(f"  {field}: expected '{expected_val}', got '{actual_val}'")
-            else:
-                DebugTracer.log(f"Model '{model_name}' found in CLI but not in manifest", "VALIDATOR")
-                logging.warning(f"Model '{model_name}' found in CLI but not in manifest")
-                all_valid = False
+        # Validate models
+        fields = ['release_date', 'model_size', 'notes']
+        failures = []
         
-        for model_name in manifest_models:
-            if model_name not in models:
-                DebugTracer.log(f"Model '{model_name}' in manifest but not in CLI output", "VALIDATOR")
-                logging.warning(f"Model '{model_name}' in manifest but not in CLI output")
-                all_valid = False
+        for name, cli_data in models.items():
+            if name not in manifest_models:
+                failures.append(f"Model '{name}' found in CLI but not in manifest")
+                continue
+            
+            for field in fields:
+                if cli_data.get(field) != manifest_models[name].get(field):
+                    failures.append(f"{name}.{field}: expected '{manifest_models[name].get(field)}', got '{cli_data.get(field)}'")
         
-        DebugTracer.log(f"Model list validation: {'PASS' if all_valid else 'FAIL'}", "VALIDATOR")
-        logging.debug(f"Model list validation: {'PASS' if all_valid else 'FAIL'}")
-        return all_valid
+        for name in set(manifest_models) - set(models):
+            failures.append(f"Model '{name}' in manifest but not in CLI")
+        
+        for f in failures:
+            log(f, "warning" if "but not in" in f else "debug")
+        
+        success = not failures
+        log(f"Model list validation: {'PASS' if success else 'FAIL'}")
+        return success
 
     @staticmethod
     @DebugTracer.log_operation
     def test_inference_client_switches(process, manifest_version):
         """Test inference client switches based on manifest expectations."""
-        DebugTracer.log(f"Testing inference client switches for v{manifest_version:03d}", "VALIDATOR")
-        logging.debug(f"=== Testing Inference Client Switches (v{manifest_version:03d}) ===")
+        log = lambda msg, lvl="debug": (
+            DebugTracer.log(msg, "VALIDATOR"),
+            getattr(logging, lvl)(msg)
+        )
         
-        # Get expected model → inference client mapping from manifest
-        expected = Manifest.get_expected_versions(manifest_version)
-        models_config = expected.get('models', {})
+        log(f"Testing inference client switches for v{manifest_version:03d}")
         
-        if not models_config:
-            DebugTracer.log("No model configuration found in manifest", "VALIDATOR")
-            logging.warning("No model configuration found in manifest")
+        models = {
+            k: v['inference_client_version']
+            for k, v in Manifest.get_expected_versions(manifest_version).get('models', {}).items()
+            if isinstance(v, dict) and 'inference_client_version' in v
+        }
+        
+        if not models:
+            log("No models with inference client versions found", "warning")
             return True
         
-        # Filter models that have inference client version specified
-        models_to_test = {}
-        for model_name, model_config in models_config.items():
-            if isinstance(model_config, dict) and 'inference_client_version' in model_config:
-                models_to_test[model_name] = model_config['inference_client_version']
+        log(f"Testing {len(models)} models: {models}")
         
-        if not models_to_test:
-            DebugTracer.log("No models with inference client versions found in manifest", "VALIDATOR")
-            logging.warning("No models with inference client versions found in manifest")
-            return True
+        failed = [
+            model for model, client in models.items()
+            if not Validator.model_switch(process, model, expected_inference_client=client)
+        ]
         
-        DebugTracer.log(f"Found {len(models_to_test)} models to test: {models_to_test}", "VALIDATOR")
-        logging.debug(f"Testing inference client switches for models: {models_to_test}")
+        if failed:
+            log(f"Failed models: {failed}", "error")
         
-        all_passed = True
-        for model_name, expected_inference_client in models_to_test.items():
-            DebugTracer.log(f"Testing model {model_name} → inference client {expected_inference_client}", "VALIDATOR")
-            logging.debug(f"Testing model {model_name} with expected inference client {expected_inference_client}")
-            
-            success = Validator.model_switch(
-                process, 
-                model_name,
-                expected_inference_client=expected_inference_client
-            )
-            
-            if not success:
-                DebugTracer.log(f"Failed to switch to model {model_name} with inference client {expected_inference_client}", "VALIDATOR")
-                logging.error(f"Failed to switch to model {model_name} with inference client {expected_inference_client}")
-                all_passed = False
-        
-        DebugTracer.log(f"Inference client switches result: {'PASS' if all_passed else 'FAIL'}", "VALIDATOR")
-        logging.debug(f"Inference client switches: {'PASS' if all_passed else 'FAIL'}")
-        return all_passed
+        success = not failed
+        log(f"Result: {'PASS' if success else 'FAIL'}")
+        return success
 
     @staticmethod
     @DebugTracer.log_operation
     def validate_versions(process, manifest_version, components_to_check=None):
         """Validate component versions against expected versions from manifest."""
-        DebugTracer.log(f"Validating versions for manifest v{manifest_version:03d}", "VALIDATOR")
-        logging.debug(f"=== Validating Versions (v{manifest_version:03d}) ===")
+        log = lambda msg, lvl="debug": (
+            DebugTracer.log(msg, "VALIDATOR"),
+            getattr(logging, lvl)(msg)
+        )
+        
+        log(f"Validating versions for manifest v{manifest_version:03d}")
         
         expected = Manifest.get_expected_versions(manifest_version)
         if not expected:
-            DebugTracer.log("No expected versions found - skipping validation", "VALIDATOR")
-            logging.warning("No expected versions found - skipping version validation")
+            log("No expected versions found - skipping validation", "warning")
             return True
         
         cmd = Commands(process)
+        actual = {
+            **Parser.parse_versions_from_check_updates(cmd.check_updates()),
+            **Parser.parse_versions_from_config(cmd.get_config())
+        }
         
-        check_updates_output = cmd.check_updates()
-        actual_versions = Parser.parse_versions_from_check_updates(check_updates_output)
+        log(f"Expected: {expected}\nActual: {actual}")
         
-        config_output = cmd.get_config()
-        config_versions = Parser.parse_versions_from_config(config_output)
+        components = components_to_check or Config.VALIDAITON_COMPONENTS
+        failures = []
         
-        actual_versions.update(config_versions)
-        
-        DebugTracer.log(f"Expected versions: {expected}", "VALIDATOR")
-        DebugTracer.log(f"Actual versions: {actual_versions}", "VALIDATOR")
-        
-        if components_to_check is None:
-            components_to_check = Config.VALIDAITON_COMPONENTS
-        
-        all_valid = True
-        for component in components_to_check:
-            expected_version = expected.get(component)
-            actual_version = actual_versions.get(component)
-            
-            if expected_version is None:
-                DebugTracer.log(f"⚪ {component}: no expected version in manifest", "VALIDATOR")
-                logging.debug(f"{component}: no expected version specified")
+        for comp in components:
+            exp, act = expected.get(comp), actual.get(comp)
+            if exp is None:
                 continue
-                
-            if actual_version is None:
-                DebugTracer.log(f"❓ {component}: version not found in server output", "VALIDATOR")
-                logging.warning(f"{component}: version not found in server output")
-                all_valid = False
-                continue
-            
-            if actual_version == expected_version:
-                DebugTracer.log(f"✓ {component}: {actual_version} (matches expected)", "VALIDATOR")
-                logging.debug(f"{component}: {actual_version} ✓")
-            else:
-                DebugTracer.log(f"✗ {component}: got '{actual_version}', expected '{expected_version}'", "VALIDATOR")
-                logging.error(f"{component}: got '{actual_version}', expected '{expected_version}'")
-                all_valid = False
+            if act is None:
+                log(f"{comp}: version not found", "warning")
+                failures.append(comp)
+            elif act != exp:
+                log(f"{comp}: got '{act}', expected '{exp}'", "error")
+                failures.append(comp)
         
-        DebugTracer.log(f"Version validation result: {'PASS' if all_valid else 'FAIL'}", "VALIDATOR")
-        logging.debug(f"Version validation: {'PASS' if all_valid else 'FAIL'}")
-        return all_valid
+        success = not failures
+        log(f"Result: {'PASS' if success else 'FAIL'}")
+        return success
 
     @staticmethod
     def model_switch(process, model_name, expected_inference_client=None):
-        DebugTracer.log(f"Testing model switch to: {model_name}", "VALIDATOR")
-        logging.debug(f"=== Testing Model Switch to {model_name} ===")
+        log = lambda msg, lvl="debug": (
+            DebugTracer.log(msg, "VALIDATOR"),
+            getattr(logging, lvl)(msg)
+        )
         
+        log(f"Testing model switch to: {model_name}")
         cmd = Commands(process)
         
-        config_before = cmd.get_config()
-        parsed_config_before = Parser.parse_config(config_before)
+        # Get before state
+        before = Parser.parse_config(cmd.get_config())
+        log(f"Before - Model: {before.get('active_model')}, Client: {before.get('active_inference_client')}")
         
-        current_model = parsed_config_before.get('active_model', 'unknown')
-        current_inference_client = parsed_config_before.get('active_inference_client', 'unknown')
-        
-        DebugTracer.log(f"Before switch - Model: {current_model}, Inference Client: {current_inference_client}", "VALIDATOR")
-        logging.debug(f"Before switch - Model: {current_model}, Inference Client: {current_inference_client}")
-        
-        DebugTracer.log(f"Switching to model: {model_name}", "VALIDATOR")
-        output = cmd.model_use(model_name)
-        
-        if Config.MODEL_CHANGE['success'] in output:
-            DebugTracer.log(f"Model switch command succeeded", "VALIDATOR")
-            logging.debug(f"Model switch to {model_name} succeeded")
-        else:
-            DebugTracer.log(f"Model switch command failed - success pattern not found", "VALIDATOR")
-            logging.error(f"Model switch to {model_name} failed - success pattern not found")
+        # Execute switch
+        if Config.MODEL_CHANGE['success'] not in cmd.model_use(model_name):
+            log(f"Model switch to {model_name} failed - success pattern not found", "error")
             return False
         
-        config_after = cmd.get_config()
-        parsed_config_after = Parser.parse_config(config_after)
+        # Verify after state
+        after = Parser.parse_config(cmd.get_config())
+        new_model = after.get('active_model')
+        new_client = after.get('active_inference_client')
+        log(f"After - Model: {new_model}, Client: {new_client}")
         
-        new_model = parsed_config_after.get('active_model', 'unknown')
-        new_inference_client = parsed_config_after.get('active_inference_client', 'unknown')
-        
-        DebugTracer.log(f"After switch - Model: {new_model}, Inference Client: {new_inference_client}", "VALIDATOR")
-        logging.debug(f"After switch - Model: {new_model}, Inference Client: {new_inference_client}")
-        
-        if new_model == model_name:
-            DebugTracer.log(f"✓ Active model confirmed: {model_name}", "VALIDATOR")
-            logging.debug(f"Active model confirmed: {model_name}")
-        else:
-            DebugTracer.log(f"✗ Active model verification failed - expected {model_name}, got {new_model}", "VALIDATOR")
-            logging.error(f"Active model not set to {model_name}, got {new_model}")
+        # Check model
+        if new_model != model_name:
+            log(f"Model verification failed - expected {model_name}, got {new_model}", "error")
             return False
         
-        if expected_inference_client:
-            if new_inference_client == expected_inference_client:
-                DebugTracer.log(f"✓ Inference client confirmed: {expected_inference_client}", "VALIDATOR")
-                logging.debug(f"Inference client confirmed: {expected_inference_client}")
-                
-                if current_inference_client != new_inference_client:
-                    DebugTracer.log(f"✓ Inference client updated: {current_inference_client} → {new_inference_client}", "VALIDATOR")
-                    logging.debug(f"Inference client updated: {current_inference_client} → {new_inference_client}")
-                else:
-                    DebugTracer.log(f"✓ Inference client unchanged: {new_inference_client}", "VALIDATOR")
-                    logging.debug(f"Inference client unchanged: {new_inference_client}")
-            else:
-                DebugTracer.log(f"✗ Inference client verification failed - expected {expected_inference_client}, got {new_inference_client}", "VALIDATOR")
-                logging.error(f"Inference client not set to {expected_inference_client}, got {new_inference_client}")
-                return False
+        # Check inference client if specified
+        if expected_inference_client and new_client != expected_inference_client:
+            log(f"Client verification failed - expected {expected_inference_client}, got {new_client}", "error")
+            return False
         
-        DebugTracer.log(f"Model switch validation: PASS", "VALIDATOR")
-        logging.debug(f"Model switch to {model_name} validation: PASS")
+        log("Model switch validation: PASS")
         return True
 
 class Updater:
