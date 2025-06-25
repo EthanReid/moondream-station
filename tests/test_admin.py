@@ -183,16 +183,18 @@ def test_inference_clients(process, version):
     
     return True
 
-
-
 # Main Test Sequence
 def main():
     parser = argparse.ArgumentParser(description='Test Moondream Station updates')
     parser.add_argument('--executable', default='./moondream_station')
     parser.add_argument('--verbose', action='store_true')
-
     parser.add_argument('--no-cleanup', action='store_true')
+    parser.add_argument('--manifest-url', help='URL to manifest.json for testing')
     args, server_args = parser.parse_known_args()
+    
+    # Add manifest URL to server args if provided
+    if args.manifest_url:
+        server_args = ['--manifest-url', args.manifest_url] + server_args
     
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
