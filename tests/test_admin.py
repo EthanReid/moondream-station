@@ -60,17 +60,24 @@ def update_manifest(version):
 def parse_update_status(output):
     """Parse check-updates output to component status dict."""
     status = {}
-    for line in output.split('\n'):
-        if 'Up to date' in line:
+    # Convert all \r to \n to handle spinner/progress artifacts
+    lines = [line.strip() for line in output.replace('\r', '\n').split('\n') 
+             if line.strip() and not line.strip().startswith('Checking for') and not line.strip().startswith('admin')]
+    
+    for line in lines:
+        if ':' in line and (' - Up to date' in line or ' - Update available' in line):
             comp = line.split(':')[0].strip()
-            status[comp] = 'up_to_date'
-        elif 'Update available' in line:
-            comp = line.split(':')[0].strip()
-            status[comp] = 'update_available'
+            if ' - Up to date' in line:
+                status[comp] = 'up_to_date'
+            elif ' - Update available' in line:
+                status[comp] = 'update_available'
     return status
 
 def check_update_status(process, expected):
     """Verify update status matches expected."""
+    # Send a dummy command first to clear any spinners
+    run_command(process, 'admin health')
+    
     output = run_command(process, 'admin check-updates')
     actual = parse_update_status(output)
     
@@ -87,14 +94,22 @@ def get_versions(process):
     
     versions = {}
     
-    # Parse from check-updates
-    for match in re.finditer(r'(\w+):\s+(v[\d.]+)', updates):
-        versions[match.group(1).lower()] = match.group(2)
+    # Parse from check-updates - more specific regex
+    if match := re.search(r'Bootstrap:\s+(v[\d.]+)', updates):
+        versions['bootstrap'] = match.group(1)
+    if match := re.search(r'Hypervisor:\s+(v[\d.]+)', updates):
+        versions['hypervisor'] = match.group(1)
+    if match := re.search(r'CLI:\s+(v[\d.]+)', updates):
+        versions['cli'] = match.group(1)
     
-    # Parse from config (for inference_client)
+    # Parse from config (for inference_client and active versions)
+    if match := re.search(r'active_bootstrap:\s+(v[\d.]+)', config):
+        versions['active_bootstrap'] = match.group(1)
+        logging.debug(f"Active bootstrap version: {match.group(1)}")
     if match := re.search(r'active_inference_client:\s+(v[\d.]+)', config):
         versions['inference_client'] = match.group(1)
     
+    logging.debug(f"Extracted versions: {versions}")
     return versions
 
 def validate_versions(process, manifest_version, components=None):
@@ -102,30 +117,50 @@ def validate_versions(process, manifest_version, components=None):
     manifest_file = MANIFEST_DIR / f'manifest_v{manifest_version:03d}.json'
     
     with open(manifest_file) as f:
-        expected = json.load(f)
+        manifest = json.load(f)
+    
+    # Extract expected versions from manifest structure
+    expected = {}
+    if 'current_bootstrap' in manifest:
+        expected['bootstrap'] = manifest['current_bootstrap']['version']
+    if 'current_hypervisor' in manifest:
+        expected['hypervisor'] = manifest['current_hypervisor']['version']
+    if 'current_cli' in manifest:
+        expected['cli'] = manifest['current_cli']['version']
+    
+    # For inference_client, we'd need to check the models
+    # but for now, let's just use the first one found
+    for category in manifest.get('models', {}).values():
+        for model_data in category.values():
+            if 'inference_client' in model_data:
+                expected['inference_client'] = model_data['inference_client']
+                break
     
     actual = get_versions(process)
     components = components or ['bootstrap', 'hypervisor', 'cli', 'inference_client']
     
     for comp in components:
-        exp_key = f'{comp}_version'
-        if exp_key in expected and expected[exp_key] != actual.get(comp):
-            logging.error(f"{comp}: expected {expected[exp_key]}, got {actual.get(comp)}")
+        if comp in expected and expected[comp] != actual.get(comp):
+            logging.error(f"{comp}: expected {expected[comp]}, got {actual.get(comp)}")
             return False
     
     return True
 
 def do_update(process, update_type, command, executable, args):
     """Execute update command and restart."""
-    logging.debug(f"Starting {update_type} update")
+    logging.debug(f"Starting {update_type} update with command: {command}")
     
     if update_type == 'bootstrap':
         # Bootstrap exits immediately
         process.sendline(command)
         try:
             process.expect(UPDATE_PATTERNS['bootstrap'], timeout=TIMEOUTS['update'])
+            logging.debug(f"Bootstrap update pattern found")
+            time.sleep(5)  # Give it time to actually update
         except pexpect.EOF:
-            pass
+            logging.debug(f"Bootstrap update ended with EOF (expected)")
+        except pexpect.TIMEOUT:
+            logging.warning(f"Bootstrap update timeout - may have completed anyway")
     else:
         # Other updates return to prompt or exit
         process.sendline(command)
@@ -133,14 +168,18 @@ def do_update(process, update_type, command, executable, args):
             idx = process.expect([UPDATE_PATTERNS.get(update_type, pexpect.TIMEOUT), PROMPT], 
                                 timeout=TIMEOUTS['update'])
             if idx == 0:  # Found completion pattern
+                logging.debug(f"{update_type} update pattern found")
                 try:
                     process.sendline('exit')
                     process.expect(pexpect.EOF, timeout=TIMEOUTS['quick'])
                 except:
                     pass
+            else:
+                logging.debug(f"{update_type} update returned to prompt")
         except pexpect.TIMEOUT:
             logging.warning(f"{update_type} update timeout")
     
+    time.sleep(5)  # Give system time to settle
     return restart_server(process, executable, args)
 
 def test_model_switch(process, model_name, expected_client=None):
@@ -263,6 +302,10 @@ def main():
                 
                 # Do update
                 process = do_update(process, component, command, args.executable, server_args)
+                
+                # Log versions after update
+                versions_after = get_versions(process)
+                logging.debug(f"Versions after {component} update: {versions_after}")
                 
                 # Verify update complete
                 if not check_update_status(process, {
