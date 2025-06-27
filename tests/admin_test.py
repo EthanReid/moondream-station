@@ -92,6 +92,19 @@ def generate_manifest(base_manifest: str,
                       models_json: str = None,
                       output_path: str = None,
                       new_manifest_version: str = "v0.0.2") -> Manifest:
+    """
+    Generate a manifest based on the base manifest and the provided tarball information.
+    Args:
+        base_manifest (str): Path to the base manifest JSON file.
+        tarball_info (dict): A dictionary containing component names as keys and their version and path
+                                as values. Example: {"bootstrap": {"version": "v0.0.2", "path": "path/to/tarball"}}
+        serve_url (str): The URL where the tarballs will be served.
+        models_json (str, optional): Path to a JSON file containing models to be included in the manifest.
+        output_path (str, optional): Path where the generated manifest will be saved.
+        new_manifest_version (str, optional): The version of the manifest to be generated. Defaults to "v0.0.2".
+    Returns:
+        Manifest: An instance of the Manifest class populated with the provided information.
+    """
     
     manifest = Manifest(base_manifest)
     print(manifest.to_dict())
@@ -129,6 +142,8 @@ def generate_manifest(base_manifest: str,
 
     return manifest
 
+
+# ====================
 components = {
     "bootstrap": "v0.0.2",
     "hypervisor": "v0.0.1",
