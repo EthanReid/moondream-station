@@ -1,5 +1,6 @@
-import os, subprocess, shutil, json
+import os, subprocess, shutil, json, threading
 from pathlib import Path
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 from manifest_handler import Manifest, InferenceClient
 
 TARBALL_BASE = "output"
@@ -85,6 +86,12 @@ def create_and_extract_tarball(
     
     return copied
 
+def model_uses_version(models, version):
+    return any(
+        model.get("inference_client") == version
+        for category in models.values()
+        for model in category.values()
+    )
 
 def generate_manifest(base_manifest: str, 
                       tarball_info: dict[str, dict[str, str]],
@@ -111,6 +118,19 @@ def generate_manifest(base_manifest: str,
 
     # Update manifest version
     manifest.manifest_version = new_manifest_version
+
+    # If models_json is provided, update the manifest with models
+    if models_json:
+        with open(models_json, 'r') as f:
+            test_models = json.load(f)
+        
+        total_models = sum(len(category) for category in test_models.values())
+        if total_models == 0:
+            raise ValueError("Models JSON must contain at least one model")
+        
+        manifest.models = test_models
+        print(f"Replaced models from {models_json}")
+
     for component, info in tarball_info.items():
         version = info["version"]
         tarball_name = Path(info["path"]).name
@@ -119,6 +139,9 @@ def generate_manifest(base_manifest: str,
         print(f"Updating manifest for {component} with version {version} and URL {url}") #TODO: Remove this in prod
         
         if component == "inference":
+            if not model_uses_version(manifest.models, version):
+                print(f"WARNING: No models use inference_client {version}")
+
             curr_version = list(manifest.inference_clients.keys())[0]
             curr_date = manifest.inference_clients[curr_version].date
             manifest.inference_clients[version] = InferenceClient(
@@ -129,12 +152,6 @@ def generate_manifest(base_manifest: str,
             current_component = getattr(manifest, f"current_{component}")
             current_component.version = version
             current_component.url = url
-    
-    # If models_json is provided, update the manifest with models
-    if models_json:
-        with open(models_json, 'r') as f:
-            manifest.models = json.load(f)
-        print(f"Replaced models from {models_json}")
 
     if output_path:
         manifest.save(output_path)
@@ -142,25 +159,49 @@ def generate_manifest(base_manifest: str,
 
     return manifest
 
+def serve_test_files(test_folder: Path, port: int = 8000):
+    os.chdir(test_folder)
+    server = HTTPServer(('localhost', port), SimpleHTTPRequestHandler)
+    print(f"Serving test files from {test_folder} on http://localhost:{port}")
+    
+    # Run in background thread so it doesn't block
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.daemon = True
+    server_thread.start()
+    
+    return server
 
 # ====================
-components = {
-    "bootstrap": "v0.0.2",
-    "hypervisor": "v0.0.1",
-    "cli": "v0.0.3",
-    "inference": "v0.0.2"
-}
 
-test_path = Path(__file__).parent / TEST_FOLDER
-copied = create_and_extract_tarball(components=components,
-                           test_folder=test_path,
-                           system="ubuntu")
-print(copied)
-base_path = "/home/snow/projects/moondream-station-2/tests/test_files/base_manifest.json"
-print (f"Base manifest path: {test_path / 'base_manifest.json'}")
-generate_manifest(base_manifest=str(test_path / "base_manifest.json"),
-                   tarball_info=copied,
-                   serve_url="http://localhost:8000/tarfiles",
-                   output_path=str(test_path / "test_manifest.json"),
-                   models_json=str(test_path / "test_models.json"),
-                   )
+
+def main():
+
+    components = {
+        "bootstrap": "v0.0.2",
+        "hypervisor": "v0.0.1",
+        "cli": "v0.0.3",
+        "inference": "v0.0.2"
+    }
+
+    test_path = Path(__file__).parent / TEST_FOLDER
+    copied = create_and_extract_tarball(components=components,
+                            test_folder=test_path,
+                                system="ubuntu")
+    print(copied)
+    base_path = "/home/snow/projects/moondream-station-2/tests/test_files/base_manifest.json"
+    print (f"Base manifest path: {test_path / 'base_manifest.json'}")
+    generate_manifest(base_manifest=str(test_path / "base_manifest.json"),
+                    tarball_info=copied,
+                    serve_url="http://localhost:8000/tarfiles",
+                    output_path=str(test_path / "test_manifest.json"),
+                    models_json=str(test_path / "test_models.json"),
+                    )
+
+    server = serve_test_files(test_folder=test_path, port=8000)
+    import requests
+    response = requests.get("http://localhost:8000/base_manifest.json")
+    print(response.json())
+    server.shutdown()  # Shutdown the server after use
+
+if __name__ == "__main__":
+    main()
