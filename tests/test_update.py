@@ -2,6 +2,7 @@ import os, subprocess, shutil, json, threading
 from pathlib import Path
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from manifest_handler import Manifest, InferenceClient
+from server_handler import MoondreamServer
 
 TARBALL_BASE = "output"
 TEST_FOLDER = "test_files"
@@ -188,7 +189,6 @@ def main():
                             test_folder=test_path,
                                 system="ubuntu")
     print(copied)
-    base_path = "/home/snow/projects/moondream-station-2/tests/test_files/base_manifest.json"
     print (f"Base manifest path: {test_path / 'base_manifest.json'}")
     generate_manifest(base_manifest=str(test_path / "base_manifest.json"),
                     tarball_info=copied,
@@ -201,6 +201,13 @@ def main():
     import requests
     response = requests.get("http://localhost:8000/base_manifest.json")
     print(response.json())
+    exe_path = "/home/snow/projects/moondream-station-2/output/moondream_station/moondream_station"
+
+    moondream = MoondreamServer(exe_path, str(test_path / "base_manifest.json"), str(test_path / "test_manifest.json"))
+    moondream.start()
+    versions = moondream.get_versions()
+    print(versions)
+    moondream.stop()
     server.shutdown()  # Shutdown the server after use
 
 if __name__ == "__main__":
