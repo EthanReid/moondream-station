@@ -1,6 +1,6 @@
-import os, subprocess, shutil, json, requests
+import os, subprocess, shutil
 from pathlib import Path
-from manifest_handler import Manifest, Component, InferenceClient
+from manifest_handler import Manifest, InferenceClient
 
 TARBALL_BASE = "output"
 TEST_FOLDER = "test_files"
@@ -86,15 +86,15 @@ def create_and_extract_tarball(
     return copied
 
 
-
 def generate_manifest(base_manifest: str, 
-                      tarball_info: dict[str, dict[str, str]], 
-                      serve_url: str, 
+                      tarball_info: dict[str, dict[str, str]],
+                      serve_url: str,
+                      output_path: str = None,
                       new_manifest_version: str = "v0.0.2") -> None:
     
     manifest = Manifest(base_manifest)
     print(manifest.to_dict())
-    
+
     # Update manifest version
     manifest.manifest_version = new_manifest_version
     for component, info in tarball_info.items():
@@ -108,17 +108,20 @@ def generate_manifest(base_manifest: str,
             curr_version = list(manifest.inference_clients.keys())[0]
             curr_date = manifest.inference_clients[curr_version].date
             manifest.inference_clients[version] = InferenceClient(
-                date=curr_date, # TODO: Allow update with actual date?
+                date=curr_date, # TODO: Allow update with user defined date?
                 url=url
             )
         else:
             current_component = getattr(manifest, f"current_{component}")
             current_component.version = version
             current_component.url = url
-    print(manifest.to_dict())
+    
+    if output_path is not None:
+        output_path = Path(output_path)
+        manifest.save(output_path)
+        print(f"Manifest saved to {output_path}")
 
-    return
-
+    return manifest
 
 components = {
     "bootstrap": "v0.0.2",
@@ -126,12 +129,16 @@ components = {
     "cli": "v0.0.3",
     "inference": "v0.0.2"
 }
+
 test_path = Path(__file__).parent / TEST_FOLDER
 copied = create_and_extract_tarball(components=components,
                            test_folder=test_path,
                            system="ubuntu")
 print(copied)
 base_path = "/home/snow/projects/moondream-station-2/tests/test_files/base_manifest.json"
-generate_manifest(base_manifest=base_path,
+print (f"Base manifest path: {test_path / 'base_manifest.json'}")
+generate_manifest(base_manifest=str(test_path / "base_manifest.json"),
                    tarball_info=copied,
-                   serve_url="http://localhost:8000/tarfiles")
+                   serve_url="http://localhost:8000/tarfiles",
+                   output_path=str(test_path / "test_manifest.json"),
+                   )
