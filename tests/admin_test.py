@@ -1,4 +1,4 @@
-import os, subprocess, shutil
+import os, subprocess, shutil, json
 from pathlib import Path
 from manifest_handler import Manifest, InferenceClient
 
@@ -89,8 +89,9 @@ def create_and_extract_tarball(
 def generate_manifest(base_manifest: str, 
                       tarball_info: dict[str, dict[str, str]],
                       serve_url: str,
+                      models_json: str = None,
                       output_path: str = None,
-                      new_manifest_version: str = "v0.0.2") -> None:
+                      new_manifest_version: str = "v0.0.2") -> Manifest:
     
     manifest = Manifest(base_manifest)
     print(manifest.to_dict())
@@ -102,7 +103,7 @@ def generate_manifest(base_manifest: str,
         tarball_name = Path(info["path"]).name
         url = f"{serve_url}/{tarball_name}"
 
-        print(f"Updating manifest for {component} with version {version} and URL {url}")
+        print(f"Updating manifest for {component} with version {version} and URL {url}") #TODO: Remove this in prod
         
         if component == "inference":
             curr_version = list(manifest.inference_clients.keys())[0]
@@ -116,8 +117,13 @@ def generate_manifest(base_manifest: str,
             current_component.version = version
             current_component.url = url
     
-    if output_path is not None:
-        output_path = Path(output_path)
+    # If models_json is provided, update the manifest with models
+    if models_json:
+        with open(models_json, 'r') as f:
+            manifest.models = json.load(f)
+        print(f"Replaced models from {models_json}")
+
+    if output_path:
         manifest.save(output_path)
         print(f"Manifest saved to {output_path}")
 
@@ -141,4 +147,5 @@ generate_manifest(base_manifest=str(test_path / "base_manifest.json"),
                    tarball_info=copied,
                    serve_url="http://localhost:8000/tarfiles",
                    output_path=str(test_path / "test_manifest.json"),
+                   models_json=str(test_path / "test_models.json"),
                    )
