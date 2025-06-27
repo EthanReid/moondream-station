@@ -108,12 +108,8 @@ PY
         cp "$SRC_DIR/$f" "$DIST_DIR"
     done
     
-    # Create versioned tar file
-    local VERSION_TAG="${VERSION//\./_}"  # v0.0.1 -> v0_0_1
-    tar -czf "../output/inference_bootstrap_${VERSION_TAG}.tar.gz" -C "../output" "inference_bootstrap"
-    
-    # Also create unversioned for backward compatibility
-    cp "../output/inference_bootstrap_${VERSION_TAG}.tar.gz" "../output/inference_bootstrap.tar.gz"
+    # Create tar file
+    tar -czf "../output/inference_bootstrap.tar.gz" -C "../output" "inference_bootstrap"
     
     # Clean up info.json if it exists
     rm -f info.json
@@ -195,13 +191,8 @@ PY
     fi
     
     # Create versioned tar files
-    local VERSION_TAG="${VERSION//\./_}"  # v0.0.1 -> v0_0_1
-    tar -czf "../output/hypervisor_${VERSION_TAG}.tar.gz" -C "$SUP_DIR" .
-    tar -czf "../output/moondream_station_ubuntu_${VERSION_TAG}.tar.gz" -C "$DIST_DIR" moondream_station
-    
-    # Also create unversioned for backward compatibility
-    cp "../output/hypervisor_${VERSION_TAG}.tar.gz" "../output/hypervisor.tar.gz"
-    cp "../output/moondream_station_ubuntu_${VERSION_TAG}.tar.gz" "../output/moondream_station_ubuntu.tar.gz"
+    tar -czf "../output/hypervisor.tar.gz" -C "$SUP_DIR" .
+    tar -czf "../output/moondream_station_ubuntu.tar.gz" -C "$DIST_DIR" moondream_station
     
     # Clean up info.json
     rm -f info.json
