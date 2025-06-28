@@ -1,5 +1,4 @@
 {
-    "models": {
         "2b": {
             "Moondream2-INT4": {
                 "release_date": "2025-05-21",
@@ -39,4 +38,3 @@
             }
         }
     }
-}
