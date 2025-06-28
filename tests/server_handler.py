@@ -103,21 +103,28 @@ class MoondreamServer:
 
     def update_component(self, component: str) -> bool:
         """Update component with component-specific behavior."""
-        cmd = f"admin update-{component} --confirm"
         pattern = self.update_patterns[component]
         
+        if component == 'cli':
+            cmd = "admin update --confirm"
+        else:
+            cmd = f"admin update-{component} --confirm"
+        
+        print(f"Updating {component} with: {cmd}")
         self.process.sendline(cmd)
         
         try:
-            # Others: pattern → hang
+            # All components: wait for their specific pattern
             self.process.expect(pattern, timeout=self.timeout)
-            print(f"{component} update pattern found")
-            # Kill the hung process
+            print(f"{component} update pattern found: {pattern}")
+            
+            # After pattern, process is either hung or in restart sequence
+            # Just kill it regardless
             if self.process.isalive():
                 self.stop()
-        except pexpect.TIMEOUT or TimeoutError:
-            raise RuntimeError(f"Update timeout - no pattern '{pattern}' found in {self.timeout}s")
-
-
+                
+        except pexpect.TIMEOUT:
+            raise RuntimeError(f"{component} update failed - pattern not found")
+        
         return True
            
