@@ -14,11 +14,11 @@ class MoondreamServer:
         self.prompt = 'moondream>'
         self.update_patterns = {
         'bootstrap': r'(Restart.*for update|Terminated)',
-        'hypervisor': r'Hypervisor.*update.*completed',
+        'hypervisor': r'Server status: Hypervisor: off, Inference: off',
         'model': r'All component updates have been processed',
         'cli': r'CLI update complete\. Please restart the CLI'
         }
-        self.timeout = 300
+        self.timeout = 100
     
     def start(self, use_update_manifest: bool = False):
         """Start server with specified manifest."""
@@ -50,7 +50,9 @@ class MoondreamServer:
                 pass # Force close if exit command fails to exit fast enough
             finally:
                 self.process.close(force=True)
-        print("Server stopped.")
+            print("Server stopped.")
+        else:
+            print("Server was not running to begin with.")
 
     def restart(self, use_update_manifest: bool = True):
         """Restart server, optionally with update manifest."""
