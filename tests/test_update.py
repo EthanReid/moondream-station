@@ -7,7 +7,7 @@ from server_handler import MoondreamServer
 TARBALL_BASE = "output"
 TEST_FOLDER = "test_files"
 
-def create_and_extract_tarball( #TODO: Change this name to create and copy tarballs!
+def create_and_copy_tarball(
         components: dict[str, str], # {"bootstrap": "v0.0.2", "hypervisor": "v0.0.1"}
         test_folder:Path,
         base_folder: Path = None,
@@ -204,14 +204,14 @@ def main():
     }
 
     
-    test_copied = create_and_extract_tarball(components=test_components,
+    test_copied = create_and_copy_tarball(components=test_components,
                             test_folder=test_path,
                                 system="ubuntu")
     print("Copied test tarballs:")
     print(test_copied)
 
     # build base after test so that we start with base build
-    base_copied = create_and_extract_tarball(components=base_components,
+    base_copied = create_and_copy_tarball(components=base_components,
                                              test_folder=test_path
                                              )
     print("Copied base tarballs:")
