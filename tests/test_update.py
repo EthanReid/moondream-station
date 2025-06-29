@@ -233,13 +233,14 @@ def main():
     test_copied = create_and_extract_tarball(components=test_components,
                             test_folder=test_path,
                                 system="ubuntu")
+    print("Copied test tarballs:")
     print(test_copied)
 
     # build base after test so that we start with base build
     base_copied = create_and_extract_tarball(components=base_components,
                                              test_folder=test_path
                                              )
-    
+    print("Copied base tarballs:")
     print(base_copied)
 
     # build_base_version(base_manifest_path=str(base_manifest_path)) #TODO: We don't need this anymore?
@@ -251,24 +252,35 @@ def main():
                     models_json=str(test_path / "test_models.json"),
                     )
 
-    server = serve_test_files(test_folder=test_path, port=8000)
+    localhost_port = 8000
+    localhost_url = f"http://localhost:{localhost_port}"
+    
+    server = serve_test_files(test_folder=test_path, port=localhost_port)
+    
     import requests
-    response = requests.get("http://localhost:8000/base_manifest.json")
+    response = requests.get(f"{localhost_url}/base_manifest.json")
     print(response.json())
-    exe_path = "/home/snow/projects/moondream-station-2/output/moondream_station/moondream_station"
 
-    moondream = MoondreamServer(exe_path, str(test_path / "base_manifest.json"), str(test_path / "test_manifest.json"))
+    exe_path = "/home/snow/projects/moondream-station-2/output/moondream_station/moondream_station"
+    base_manifest_url = f"{localhost_url}/base_manifest.json"
+    update_manifest_url = f"{localhost_url}/test_manifest.json"
+    moondream = MoondreamServer(exe_path, base_manifest_url=base_manifest_url, update_manifest_url=update_manifest_url)
+
     moondream.start()
     versions = moondream.get_versions()
     print(versions)
     moondream.restart()
+    
     notes = ["Hello World, this is the Moondream Station manifest."]
     moondream.pull_manifest(notes) # TODO: Is this necessary?
-    # TODO: check updates!
+    
+    print(moondream.check_updates())
     moondream.update_component("bootstrap") #update component kills moondream!
+
+    # # update needs to happen when CLI
     moondream.start(True)
-    new_versions = moondream.get_versions()
-    print(new_versions)
+    print(moondream.check_updates())
+    print(moondream.get_versions())
     moondream.stop()
     server.shutdown()  # Shutdown the server after use
 
