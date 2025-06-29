@@ -1,6 +1,7 @@
 import os, subprocess, shutil, json, threading, time
 import pytest
 from pathlib import Path
+import argparse
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from manifest_handler import Manifest, InferenceClient
 from server_handler import MoondreamServer
@@ -96,6 +97,32 @@ def model_uses_version(models, version):
         for model in category.values()
     )
 
+def build_base_version(base_manifest_path: str, system: str = 'ubuntu', app_dir=None) -> None:
+    repo_dir = Path(__file__).parent.parent
+
+    if app_dir is not None:
+        app_path = Path(app_dir).resolve()
+    else:
+        app_path = repo_dir / "app"
+
+    cmd = ['bash', 'build.sh', 'dev', system, '--build-clean']
+    manifest = Manifest(base_manifest_path)
+    
+    for component in ["bootstrap", "hypervisor", "cli"]:
+        version = getattr(manifest, f"current_{component}").version
+        cmd.append(f'--{component}-version={version}')
+    
+    inference = max(manifest.inference_clients.keys(), # since we may have multiple inference version keys!
+                key=lambda v: [int(x) for x in v[1:].split('.')])
+    
+    cmd.append(f'--inference-version={inference}')
+    
+    print(f"Building base version from manifest {base_manifest_path} with command : {' '.join(cmd)}")
+    result = subprocess.run(cmd, cwd=app_path, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Dev build failed: {result.stderr}")
+    print(f"Dev build output:\n{result.stdout}")
+
 def generate_manifest(template_manifest_path: str,
                       tarball_info: dict[str, dict[str, str]],
                       serve_url: str,
@@ -176,40 +203,111 @@ def serve_test_files(test_folder: Path, port: int = 8000):
 
 
 # =========== Test fixtures =============
-@pytest.fixture
+@pytest.fixture(scope="session")
 def server(test_environment):
     """New server for each test."""
     server = MoondreamServer(...)
     yield server
-    server.stop()  
-
+    server.stop()
 
 # ==================== Tests ====================
 
 
-
 # ====================
 
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Run Moondream Station update tests",
+        formatter_class = argparse.RawDescriptionHelpFormatter
+    )
+
+    # get the start state
+    # start state can be either just versions, or a full on manifest.json
+    # it's on the user that the input manifest.json is correct
+
+    # using a mutually exclusive group means we only need to use one of the arguments.
+    base_group = parser.add_mutually_exclusive_group(required=True)
+    base_group.add_argument(
+        "--base-versions",
+        type=str,
+        help='Base versions as JSON string, e.g. \'{"bootstrap": "v0.0.1", "cli": "v0.0.1"}\''
+    )
+    base_group.add_argument(
+        "--base-manifest",
+        action="store_true",
+        help="Use existing base manifest from ./test_files/base_manifest.json"
+    )
+
+    test_group = parser.add_mutually_exclusive_group(required=True)
+    test_group.add_argument(
+        "--test-versions",
+        type=str,
+        help='Test versions as JSON string, e.g. \'{"bootstrap": "v0.0.2", "cli": "v0.0.2"}\''
+    )
+    test_group.add_argument(
+        "--test-manifest",
+        action="store_true",
+        help="Use existing test manifest from ./test_files/test_manifest.json"
+    )
 
 def main():
 
     # what to not reset each test:
     # built tarballs - expensive to build each time.
     # http server - only serves files
-    # manifests
 
     # what to reset:
-    # the server instance
+    # manifests per test
+    # moondream server base build
+    # the moondream server instance
     # server should start from base manifest each time
-
+    
+    args = parse_arguments()
 
     test_path = Path(__file__).parent / TEST_FOLDER
     template_manifest_path = test_path / 'template_manifest.json'
     base_manifest_path = test_path / 'base_manifest.json'
-    
+    test_manifest_path = test_path / 'test_manifest.json'
+    test_models_path = test_path / 'test_models.json'
 
-    # first extract the components from either the args or from the test_manifest file
+       
 
+    # first extract the components from either the args or from the manifest files
+    if args.base_manifest:
+        # User wants to use existing manifest
+        if not base_manifest_path.exists():
+            raise FileNotFoundError(f"ERROR: Base manifest not found at {base_manifest_path}")
+        print(f"Using existing base manifest from {base_manifest_path}")
+        base_versions = None  # Will extract from manifest later if needed
+    else:
+        # User provided versions
+        try:
+            base_versions = json.loads(args.base_versions)
+            print(f"Base versions: {base_versions}")
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Invalid JSON for base versions: {e}")
+
+    if args.test_manifest:
+        # User wants to use existing manifest
+        if not test_manifest_path.exists():
+            raise FileNotFoundError(f"ERROR: Test manifest not found at {test_manifest_path}")
+        print(f"Using existing test manifest from {test_manifest_path}")
+        test_versions = None  # Will extract from manifest later if needed
+    else:
+        # User provided versions
+        try:
+            test_versions = json.loads(args.test_versions)
+            print(f"Test versions: {test_versions}")
+        except json.JSONDecodeError as e:
+            print(f"ERROR: Invalid JSON for test versions: {e}")
+
+    # TODO: in the base manifest, if there are components which are not specified with the version, we default to v0.0.1
+    # TODO: we should be able to override create_and_copy_tarball if needed, given it will only do it if base_manifest and test_manifest are specified and true
+
+    test_copied = create_and_copy_tarball(components=test_versions,
+                        test_folder=test_path,
+                            system="ubuntu")
+        
     # say we get this from that
     test_components = {
         "bootstrap": "v0.0.3",
