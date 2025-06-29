@@ -227,28 +227,56 @@ def parse_arguments():
 
     # using a mutually exclusive group means we only need to use one of the arguments.
     base_group = parser.add_mutually_exclusive_group(required=True)
-    base_group.add_argument(
-        "--base-versions",
-        type=str,
-        help='Base versions as JSON string, e.g. \'{"bootstrap": "v0.0.1", "cli": "v0.0.1"}\''
-    )
-    base_group.add_argument(
-        "--base-manifest",
-        action="store_true",
-        help="Use existing base manifest from ./test_files/base_manifest.json"
-    )
+    base_group.add_argument("--base-versions", type=str, 
+                           help='Base versions JSON, e.g. \'{"bootstrap": "v0.0.1"}\'')
+    base_group.add_argument("--base-manifest", action="store_true",
+                           help="Use ./test_files/base_manifest.json")
 
     test_group = parser.add_mutually_exclusive_group(required=True)
-    test_group.add_argument(
-        "--test-versions",
-        type=str,
-        help='Test versions as JSON string, e.g. \'{"bootstrap": "v0.0.2", "cli": "v0.0.2"}\''
-    )
-    test_group.add_argument(
-        "--test-manifest",
-        action="store_true",
-        help="Use existing test manifest from ./test_files/test_manifest.json"
-    )
+    test_group.add_argument("--test-versions", type=str,
+                           help='Test versions JSON, e.g. \'{"bootstrap": "v0.0.2"}\'')
+    test_group.add_argument("--test-manifest", action="store_true",
+                           help="Use ./test_files/test_manifest.json")
+    return parser.parse_args()
+
+def get_versions_from_args(args, components: list[str], test_path: str):
+    """Extract base and test versions from arguments."""
+
+    # Get base versions
+    if args.base_manifest:
+        manifest_path = test_path / 'base_manifest.json'
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"Base manifest not found at {manifest_path}")
+        base_manifest = Manifest(str(manifest_path))
+        base_versions = {
+            "bootstrap": base_manifest.current_bootstrap.version,
+            "cli": base_manifest.current_cli.version,
+            "hypervisor": base_manifest.current_hypervisor.version,
+            "inference": list(base_manifest.inference_clients.keys())[0]
+        }
+    else:
+        base_versions = json.loads(args.base_versions)
+        # Fill in default as v0.0.1 for base manifest
+        for comp in components:
+            base_versions.setdefault(comp, "v0.0.1")
+    
+    # Get test versions
+    if args.test_manifest:
+        manifest_path = test_path / 'test_manifest.json'
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"Test manifest not found at {manifest_path}")
+        test_manifest = Manifest(str(manifest_path))
+        test_versions = {
+            "bootstrap": test_manifest.current_bootstrap.version,
+            "cli": test_manifest.current_cli.version,
+            "hypervisor": test_manifest.current_hypervisor.version,
+            "inference": list(test_manifest.inference_clients.keys())[0]
+        }
+    else:
+        test_versions = json.loads(args.test_versions)
+        # we don't need defaults for versions cause we will use the versions in base manifest as default.
+    
+    return base_versions, test_versions
 
 def main():
 
@@ -270,140 +298,18 @@ def main():
     test_manifest_path = test_path / 'test_manifest.json'
     test_models_path = test_path / 'test_models.json'
 
+    components = ["bootstrap", "hypervisor", "cli", "inference"]
        
-
-    # first extract the components from either the args or from the manifest files
-    if args.base_manifest:
-        # User wants to use existing manifest
-        if not base_manifest_path.exists():
-            raise FileNotFoundError(f"ERROR: Base manifest not found at {base_manifest_path}")
-        print(f"Using existing base manifest from {base_manifest_path}")
-        base_versions = None  # Will extract from manifest later if needed
-    else:
-        # User provided versions
-        try:
-            base_versions = json.loads(args.base_versions)
-            print(f"Base versions: {base_versions}")
-        except json.JSONDecodeError as e:
-            print(f"ERROR: Invalid JSON for base versions: {e}")
-
-    if args.test_manifest:
-        # User wants to use existing manifest
-        if not test_manifest_path.exists():
-            raise FileNotFoundError(f"ERROR: Test manifest not found at {test_manifest_path}")
-        print(f"Using existing test manifest from {test_manifest_path}")
-        test_versions = None  # Will extract from manifest later if needed
-    else:
-        # User provided versions
-        try:
-            test_versions = json.loads(args.test_versions)
-            print(f"Test versions: {test_versions}")
-        except json.JSONDecodeError as e:
-            print(f"ERROR: Invalid JSON for test versions: {e}")
-
-    # TODO: in the base manifest, if there are components which are not specified with the version, we default to v0.0.1
-    # TODO: we should be able to override create_and_copy_tarball if needed, given it will only do it if base_manifest and test_manifest are specified and true
-
-    test_copied = create_and_copy_tarball(components=test_versions,
-                        test_folder=test_path,
-                            system="ubuntu")
+    try:
+        base_versions, test_versions = get_versions_from_args(args, components, test_path)
         
-    # say we get this from that
-    test_components = {
-        "bootstrap": "v0.0.3",
-        "hypervisor": "v0.0.3",
-        "cli": "v0.0.3",
-        "inference": "v0.0.3"
-    }
+        print(f"Base versions: {base_versions}")
+        print(f"Test versions: {test_versions}")
 
-    # we also need the base components.
-    # we need to fetch them from the base_manifest.
-    # TODO: Implement getting them from the base manifest/user input
-    # say these are the base components:
-    base_components = {
-        "bootstrap": "v0.0.2",
-        "hypervisor": "v0.0.2",
-        "cli": "v0.0.2",
-        "inference": "v0.0.2"
-    }
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"ERROR: {e}")
+    
 
     
-    test_copied = create_and_copy_tarball(components=test_components,
-                            test_folder=test_path,
-                                system="ubuntu")
-    print("Copied test tarballs:")
-    print(test_copied)
-
-    # build base after test so that we start with base build
-    base_copied = create_and_copy_tarball(components=base_components,
-                                             test_folder=test_path
-                                             )
-    print("Copied base tarballs:")
-    print(base_copied)
-
-    localhost_port = 8000
-    localhost_url = f"http://localhost:{localhost_port}"
-
-    # generate the base manifest
-    generate_manifest(template_manifest_path=str(template_manifest_path),
-                    tarball_info=base_copied,
-                    serve_url=f"{localhost_url}/tarfiles",
-                    output_path=str(test_path / "base_manifest.json"),
-                    # no models.json in here cause we want to use the same as the template
-                    )
-    
-    #generate the test target manifest
-    generate_manifest(template_manifest_path=str(template_manifest_path),
-                    tarball_info=test_copied,
-                    serve_url=f"{localhost_url}/tarfiles",
-                    output_path=str(test_path / "test_manifest.json"),
-                    models_json=str(test_path / "test_models.json"),
-                    )
-
-    server = serve_test_files(test_folder=test_path, port=localhost_port)
-    
-    import requests
-    response = requests.get(f"{localhost_url}/base_manifest.json")
-    print(response.json())
-
-    exe_path = "/home/snow/projects/moondream-station-2/output/moondream_station/moondream_station"
-    base_manifest_url = f"{localhost_url}/base_manifest.json"
-    update_manifest_url = f"{localhost_url}/test_manifest.json"
-    moondream = MoondreamServer(exe_path, base_manifest_url=base_manifest_url, update_manifest_url=update_manifest_url)
-
-    moondream.start()
-    versions = moondream.get_versions()
-    print(versions)
-    moondream.restart()
-    
-    notes = ["Hello World, this is the Moondream Station manifest."]
-    moondream.pull_manifest(notes) # TODO: Is this necessary?
-    
-    print(moondream.check_updates())
-    moondream.update_component("bootstrap") #update component kills moondream!
-
-    time.sleep(5)
-    moondream.start(True)
-    print(moondream.check_updates())
-    print(moondream.get_versions())
-
-    print(moondream.check_updates())
-    moondream.update_component("hypervisor") #update component kills moondream!
-
-    time.sleep(5)
-    moondream.start(True)
-    print(moondream.check_updates())
-    print(moondream.get_versions())
-
-    print(moondream.check_updates())
-    moondream.update_component("cli") # cli can only be updated if there are bootstrap or hypervisor updates.
-    time.sleep(5)
-    moondream.start(True)
-    print(moondream.check_updates())
-    print(moondream.get_versions())
-    
-    moondream.stop()
-    server.shutdown()  # Shutdown the server after use
-
 if __name__ == "__main__":
     main()
