@@ -1,27 +1,35 @@
 #!/usr/bin/env bash
-
 # Parse args
 CLEAN=false
-VERSION=""  # Add version parameter
+HYPERVISOR_VERSION=""
+CLI_VERSION=""
+INFERENCE_VERSION=""
+BOOTSTRAP_VERSION=""
 ARGS=()
 for arg in "$@"; do
     case $arg in
         --build-clean) CLEAN=true ;;
-        --version=*) VERSION="${arg#*=}" ;;  # Extract version
+        --hypervisor-version=*) HYPERVISOR_VERSION="${arg#*=}" ;;
+        --cli-version=*) CLI_VERSION="${arg#*=}" ;;
+        --inference-version=*) INFERENCE_VERSION="${arg#*=}" ;;
+        --bootstrap-version=*) BOOTSTRAP_VERSION="${arg#*=}" ;;
+        --version=*) # Legacy: sets all versions
+            VERSION="${arg#*=}"
+            HYPERVISOR_VERSION="$VERSION"
+            CLI_VERSION="$VERSION"
+            INFERENCE_VERSION="$VERSION"
+            BOOTSTRAP_VERSION="$VERSION" ;;
         *) ARGS+=("$arg") ;;
     esac
 done
-
 TYPE=${ARGS[0]:-}
 PLATFORM=${ARGS[1]:-ubuntu}
-
 # Special handling for 'run' command
 if [[ "$TYPE" == "run" ]]; then
     EXTRA_ARGS=("${ARGS[@]:1}")
 else
     EXTRA_ARGS=("${ARGS[@]:2}")
 fi
-
 if $CLEAN; then
     echo "Cleaning output and dev directories..."
     rm -rf ../output
@@ -31,9 +39,7 @@ if $CLEAN; then
         rm -rf "$HOME/.local/share/MoondreamStation"
     fi
 fi
-
 set -euo pipefail
-
 ##############################################################################
 # Helper function to create info.json
 ##############################################################################
@@ -51,18 +57,17 @@ create_info_json() {
 }
 EOF
 }
-
 ##############################################################################
 # builders
 ##############################################################################
 build_inference() {
+    local VERSION="$INFERENCE_VERSION"
     local PYI_ARGS="--onefile"
     local NAME="inference_bootstrap"
     local DIST_DIR="../output/inference_bootstrap"
     local BOOTSTRAP="../app/inference_client/bootstrap.py"
     local SRC_DIR="../app/inference_client"
     local FILES=(main.py model_service.py requirements.txt)
-
     local LIBPYTHON
     LIBPYTHON=$(
 python - <<'PY'
@@ -81,19 +86,15 @@ else:
     sys.exit(1)
 PY
 ) || exit 1
-
     PYI_ARGS="--onefile" 
-
     echo "Building 'inference'..."
     rm -rf "$DIST_DIR"; mkdir -p "$DIST_DIR"
-
     # Only create info.json and add to build if version was specified
     local ADD_DATA_ARG=""
     if [[ -n "$VERSION" ]]; then
         create_info_json "$VERSION" "inference"
         ADD_DATA_ARG="--add-data info.json:."
     fi
-
     pyinstaller $PYI_ARGS \
         --hidden-import=urllib.request \
         --hidden-import=zipfile \
@@ -103,27 +104,20 @@ PY
         --clean \
         --distpath "$DIST_DIR" \
         "$BOOTSTRAP"
-
     for f in "${FILES[@]}"; do
         cp "$SRC_DIR/$f" "$DIST_DIR"
     done
     
-    # Create versioned tar file
-    local VERSION_TAG="${VERSION//\./_}"  # v0.0.1 -> v0_0_1
-    tar -czf "../output/inference_bootstrap_${VERSION_TAG}.tar.gz" -C "../output" "inference_bootstrap"
-    
-    # Also create unversioned for backward compatibility
-    cp "../output/inference_bootstrap_${VERSION_TAG}.tar.gz" "../output/inference_bootstrap.tar.gz"
+    # Create tar file
+    tar -czf "../output/inference_bootstrap.tar.gz" -C "../output" "inference_bootstrap"
     
     # Clean up info.json if it exists
     rm -f info.json
     
     echo "✔ inference $VERSION → $DIST_DIR"
 }
-
 build_hypervisor() {
     local PYI_ARGS
-
     if [[ "$PLATFORM" = "mac" ]]; then
         # macOS always embeds Python.framework for us
         PYI_ARGS="--windowed"
@@ -147,13 +141,11 @@ else:
     sys.exit(1)
 PY
 ) || exit 1
-
         PYI_ARGS="--onefile"
     else
         echo "Unknown platform '$PLATFORM' (mac|ubuntu)" >&2
         exit 1
     fi
-
     local NAME="moondream_station"
     local DIST_DIR="../output/moondream_station"
     local SUP_DIR="../output/moondream-station-files"
@@ -164,18 +156,17 @@ PY
         manifest.py config.py misc.py update_bootstrap.sh clivisor.py
         display_utils.py
     )
-
     echo "Building 'hypervisor' for $PLATFORM..."
     rm -rf "$DIST_DIR" "$SUP_DIR"; mkdir -p "$DIST_DIR" "$SUP_DIR"
-
-    # Only create info.json if version was specified
+    
+    # Bootstrap version for the moondream_station executable
     local ADD_DATA_ARG=""
-    if [[ -n "$VERSION" ]]; then
-        echo "  with version $VERSION"
-        create_info_json "$VERSION" "hypervisor"
+    if [[ -n "$BOOTSTRAP_VERSION" ]]; then
+        echo "  bootstrap version $BOOTSTRAP_VERSION"
+        create_info_json "$BOOTSTRAP_VERSION" "bootstrap"
         ADD_DATA_ARG="--add-data info.json:."
     fi
-
+    
     pyinstaller $PYI_ARGS \
         --hidden-import=urllib.request \
         --hidden-import=zipfile \
@@ -184,36 +175,33 @@ PY
         --clean \
         --distpath "$DIST_DIR" \
         "$BOOTSTRAP"
-
+    
+    # Clean up bootstrap info.json
+    rm -f info.json
+    
     for f in "${FILES[@]}"; do
         cp "$SRC_DIR/$f" "$SUP_DIR/"
     done
     
-    # Only copy info.json if it exists (version was specified)
-    if [[ -f info.json ]]; then
+    # Hypervisor version for the component files
+    if [[ -n "$HYPERVISOR_VERSION" ]]; then
+        echo "  hypervisor component version $HYPERVISOR_VERSION"
+        create_info_json "$HYPERVISOR_VERSION" "hypervisor"
         cp info.json "$SUP_DIR/"
+        rm -f info.json
     fi
     
     # Create versioned tar files
-    local VERSION_TAG="${VERSION//\./_}"  # v0.0.1 -> v0_0_1
-    tar -czf "../output/hypervisor_${VERSION_TAG}.tar.gz" -C "$SUP_DIR" .
-    tar -czf "../output/moondream_station_ubuntu_${VERSION_TAG}.tar.gz" -C "$DIST_DIR" moondream_station
+    tar -czf "../output/hypervisor.tar.gz" -C "$SUP_DIR" .
+    tar -czf "../output/moondream_station_ubuntu.tar.gz" -C "$DIST_DIR" moondream_station
     
-    # Also create unversioned for backward compatibility
-    cp "../output/hypervisor_${VERSION_TAG}.tar.gz" "../output/hypervisor.tar.gz"
-    cp "../output/moondream_station_ubuntu_${VERSION_TAG}.tar.gz" "../output/moondream_station_ubuntu.tar.gz"
-    
-    # Clean up info.json
-    rm -f info.json
-    
-    echo "✔ hypervisor $VERSION → $DIST_DIR"
+    echo "✔ hypervisor (bootstrap: $BOOTSTRAP_VERSION, components: $HYPERVISOR_VERSION) → $DIST_DIR"
 }
-
 build_cli() {
+    local VERSION="$CLI_VERSION"
     local NAME="moondream-cli"
     local DIST_DIR="../output/moondream-cli"
     local SRC_DIR="../app/moondream_cli"
-
     echo "Building 'cli'..."
     rm -rf "$DIST_DIR"; mkdir -p "$DIST_DIR"
     
@@ -229,9 +217,8 @@ build_cli() {
     # Create unversioned tar file
     tar -czf "../output/moondream-cli.tar.gz" -C "$DIST_DIR" moondream_cli
     
-    echo "✔ cli → $DIST_DIR"
+    echo "✔ cli $VERSION → $DIST_DIR"
 }
-
 ##############################################################################
 # dev sandbox
 ##############################################################################
@@ -242,7 +229,6 @@ prepare_dev() {
     build_cli
     build_inference
     build_hypervisor
-
     local DEV_DIR
     if [[ "$PLATFORM" = "mac" ]]; then
         DEV_DIR="$HOME/Library/MoondreamStation"
@@ -251,11 +237,9 @@ prepare_dev() {
     else
         echo "Unknown platform '$PLATFORM' (mac|ubuntu)" >&2; exit 1
     fi
-
-    # For inference directory, use VERSION if specified, otherwise v0.0.1
-    local INFERENCE_VERSION="${VERSION:-v0.0.1}"
+    # For inference directory, use specified version or default
+    local INFERENCE_VERSION="${INFERENCE_VERSION:-v0.0.1}"
     mkdir -p "$DEV_DIR/inference/$INFERENCE_VERSION"
-
     # copy hypervisor supplements
     local HYP_SRC="../output/moondream-station-files"
     local HYP_FILES=(
@@ -271,16 +255,12 @@ prepare_dev() {
     if [[ -f "$HYP_SRC/info.json" ]]; then
         cp "$HYP_SRC/info.json" "$DEV_DIR/"
     fi
-
     # copy CLI dir
     cp -r "../output/moondream-cli/moondream_cli" "$DEV_DIR/"
-
     # copy inference build to versioned directory
     cp -r "../output/inference_bootstrap" "$DEV_DIR/inference/$INFERENCE_VERSION/"
-
     echo "✔ dev sandbox ready → $DEV_DIR"
 }
-
 ##############################################################################
 # execution
 ##############################################################################
@@ -298,8 +278,19 @@ case "$TYPE" in
     dev)         prepare_dev       ;;
     run)         run_station "${EXTRA_ARGS[@]}" ;;
     *)
-        echo "Usage: $0 {inference|hypervisor|cli|dev} [platform] [--version=VERSION] | $0 run" >&2
-        echo "Example: $0 hypervisor ubuntu --version=v0.0.2" >&2
+        echo "Usage: $0 {inference|hypervisor|cli|dev} [platform] [options] | $0 run" >&2
+        echo "Options:" >&2
+        echo "  --hypervisor-version=VERSION  Set hypervisor component version" >&2
+        echo "  --cli-version=VERSION        Set CLI version" >&2
+        echo "  --inference-version=VERSION  Set inference version" >&2
+        echo "  --bootstrap-version=VERSION  Set bootstrap (moondream_station executable) version" >&2
+        echo "  --version=VERSION           Set all component versions" >&2
+        echo "  --build-clean               Clean before building" >&2
+        echo "" >&2
+        echo "Examples:" >&2
+        echo "  $0 hypervisor ubuntu --hypervisor-version=v0.0.2" >&2
+        echo "  $0 hypervisor ubuntu --bootstrap-version=v1.0 --hypervisor-version=v2.0" >&2
+        echo "  $0 dev ubuntu --hypervisor-version=v1.0 --cli-version=v2.0 --inference-version=v3.0" >&2
         exit 1
         ;;
 esac
