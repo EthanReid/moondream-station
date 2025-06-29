@@ -88,32 +88,6 @@ def create_and_extract_tarball( #TODO: Change this name to create and copy tarba
         
     return copied
 
-def build_base_version(base_manifest_path: str, system: str = 'ubuntu', app_dir=None) -> None:
-    repo_dir = Path(__file__).parent.parent
-
-    if app_dir is not None:
-        app_path = Path(app_dir).resolve()
-    else:
-        app_path = repo_dir / "app"
-
-    cmd = ['bash', 'build.sh', 'dev', system, '--build-clean']
-    manifest = Manifest(base_manifest_path)
-    
-    for component in ["bootstrap", "hypervisor", "cli"]:
-        version = getattr(manifest, f"current_{component}").version
-        cmd.append(f'--{component}-version={version}')
-    
-    inference = max(manifest.inference_clients.keys(), # since we may have multiple inference version keys!
-                key=lambda v: [int(x) for x in v[1:].split('.')])
-    
-    cmd.append(f'--inference-version={inference}')
-    
-    print(f"Building base version from manifest {base_manifest_path} with command : {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=app_path, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"Dev build failed: {result.stderr}")
-    print(f"Dev build output:\n{result.stdout}")
-
 def model_uses_version(models, version):
     return any(
         model.get("inference_client") == version
