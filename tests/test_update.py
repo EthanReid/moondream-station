@@ -1,4 +1,5 @@
-import os, subprocess, shutil, json, threading
+import os, subprocess, shutil, json, threading, time
+import pytest
 from pathlib import Path
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from manifest_handler import Manifest, InferenceClient
@@ -95,7 +96,7 @@ def model_uses_version(models, version):
         for model in category.values()
     )
 
-def generate_manifest(base_manifest_path: str,
+def generate_manifest(template_manifest_path: str,
                       tarball_info: dict[str, dict[str, str]],
                       serve_url: str,
                       models_json: str = None,
@@ -115,7 +116,7 @@ def generate_manifest(base_manifest_path: str,
         Manifest: An instance of the Manifest class populated with the provided information.
     """
     
-    manifest = Manifest(base_manifest_path)
+    manifest = Manifest(template_manifest_path)
     print(manifest.to_dict())
 
     # Update manifest version
@@ -173,12 +174,37 @@ def serve_test_files(test_folder: Path, port: int = 8000):
     
     return server
 
+
+# =========== Test fixtures =============
+@pytest.fixture
+def server(test_environment):
+    """New server for each test."""
+    server = MoondreamServer(...)
+    yield server
+    server.stop()  
+
+
+# ==================== Tests ====================
+
+
+
 # ====================
 
 
 def main():
 
+    # what to not reset each test:
+    # built tarballs - expensive to build each time.
+    # http server - only serves files
+    # manifests
+
+    # what to reset:
+    # the server instance
+    # server should start from base manifest each time
+
+
     test_path = Path(__file__).parent / TEST_FOLDER
+    template_manifest_path = test_path / 'template_manifest.json'
     base_manifest_path = test_path / 'base_manifest.json'
     
 
@@ -186,21 +212,21 @@ def main():
 
     # say we get this from that
     test_components = {
-        "bootstrap": "v0.0.2",
-        "hypervisor": "v0.0.1",
+        "bootstrap": "v0.0.3",
+        "hypervisor": "v0.0.3",
         "cli": "v0.0.3",
-        "inference": "v0.0.2"
+        "inference": "v0.0.3"
     }
 
     # we also need the base components.
     # we need to fetch them from the base_manifest.
-    # TODO: Implement getting them from the base manifest
+    # TODO: Implement getting them from the base manifest/user input
     # say these are the base components:
     base_components = {
-        "bootstrap": "v0.0.1",
-        "hypervisor": "v0.0.1",
-        "cli": "v0.0.1",
-        "inference": "v0.0.1"
+        "bootstrap": "v0.0.2",
+        "hypervisor": "v0.0.2",
+        "cli": "v0.0.2",
+        "inference": "v0.0.2"
     }
 
     
@@ -217,18 +243,25 @@ def main():
     print("Copied base tarballs:")
     print(base_copied)
 
-    # build_base_version(base_manifest_path=str(base_manifest_path)) #TODO: We don't need this anymore?
+    localhost_port = 8000
+    localhost_url = f"http://localhost:{localhost_port}"
 
-    generate_manifest(base_manifest_path=str(base_manifest_path),
+    # generate the base manifest
+    generate_manifest(template_manifest_path=str(template_manifest_path),
+                    tarball_info=base_copied,
+                    serve_url=f"{localhost_url}/tarfiles",
+                    output_path=str(test_path / "base_manifest.json"),
+                    # no models.json in here cause we want to use the same as the template
+                    )
+    
+    #generate the test target manifest
+    generate_manifest(template_manifest_path=str(template_manifest_path),
                     tarball_info=test_copied,
-                    serve_url="http://localhost:8000/tarfiles",
+                    serve_url=f"{localhost_url}/tarfiles",
                     output_path=str(test_path / "test_manifest.json"),
                     models_json=str(test_path / "test_models.json"),
                     )
 
-    localhost_port = 8000
-    localhost_url = f"http://localhost:{localhost_port}"
-    
     server = serve_test_files(test_folder=test_path, port=localhost_port)
     
     import requests
@@ -251,10 +284,26 @@ def main():
     print(moondream.check_updates())
     moondream.update_component("bootstrap") #update component kills moondream!
 
-    # # update needs to happen when CLI
+    time.sleep(5)
     moondream.start(True)
     print(moondream.check_updates())
     print(moondream.get_versions())
+
+    print(moondream.check_updates())
+    moondream.update_component("hypervisor") #update component kills moondream!
+
+    time.sleep(5)
+    moondream.start(True)
+    print(moondream.check_updates())
+    print(moondream.get_versions())
+
+    print(moondream.check_updates())
+    moondream.update_component("cli") # cli can only be updated if there are bootstrap or hypervisor updates.
+    time.sleep(5)
+    moondream.start(True)
+    print(moondream.check_updates())
+    print(moondream.get_versions())
+    
     moondream.stop()
     server.shutdown()  # Shutdown the server after use
 
