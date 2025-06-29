@@ -3,15 +3,15 @@
     "manifest_date": "04/20/25",
     "current_bootstrap": {
         "version": "v0.0.1",
-        "url": "http://localhost:8000/moondream_station_ubuntu_v0.0.1.tar.gz"
+        "url": "http://localhost:8000/tarfiles/moondream_station_ubuntu_v0.0.1.tar.gz"
     },
     "current_cli": {
         "version": "v0.0.1",
-        "url": "http://localhost:8000/moondream-cli_v0.0.1.tar.gz"
+        "url": "http://localhost:8000/tarfiles/moondream-cli_v0.0.1.tar.gz"
     },
     "current_hypervisor": {
         "version": "v0.0.1",
-        "url": "http://localhost:8000/hypervisor_v0.0.1.tar.gz"
+        "url": "http://localhost:8000/tarfiles/hypervisor_v0.0.1.tar.gz"
     },
     "models": {
         "2b": {
@@ -32,7 +32,7 @@
     "inference_clients": {
         "v0.0.1": {
             "date": "2025-03-27",
-            "url": "http://localhost:8000/inference_bootstrap_v0.0.1.tar.gz"
+            "url": "http://localhost:8000/tarfiles/inference_bootstrap_v0.0.1.tar.gz"
         }
     },
     "notes": [
