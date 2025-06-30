@@ -211,6 +211,18 @@ def test_model_update(executable_path,
                       localhost_url, 
                       system,
                       update_timeout: int = 5):
+    base_manifest = Manifest(str(base_manifest_path))
+    test_manifest = Manifest(str(test_manifest_path))    
+
+    models_changed = any(
+    base_manifest.models[cat][model] != test_manifest.models.get(cat, {}).get(model, {})
+    for cat in base_manifest.models
+    for model in base_manifest.models[cat]
+    )
+
+    if not models_changed:
+        print("Model test skipped - no model changes")
+        return True
 
     # Generate model update manifest
     model_manifest_path = test_path / 'model_update_manifest.json'
