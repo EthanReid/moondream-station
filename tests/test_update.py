@@ -1,4 +1,5 @@
 import os, subprocess, shutil, json, threading, time
+import requests
 import pytest
 from pathlib import Path
 import argparse
@@ -128,7 +129,7 @@ def generate_manifest(template_manifest_path: str,
                       serve_url: str,
                       models_json: str = None,
                       output_path: str = None,
-                      new_manifest_version: str = "v0.0.2") -> Manifest:
+                      new_manifest_version: str = "v0.0.2") -> Path:
     """
     Generate a manifest based on the base manifest and the provided tarball information.
     Args:
@@ -140,7 +141,7 @@ def generate_manifest(template_manifest_path: str,
         output_path (str, optional): Path where the generated manifest will be saved.
         new_manifest_version (str, optional): The version of the manifest to be generated. Defaults to "v0.0.2".
     Returns:
-        Manifest: An instance of the Manifest class populated with the provided information.
+        output_path: The path at which the generated manifest is saved.
     """
     
     manifest = Manifest(template_manifest_path)
@@ -187,7 +188,36 @@ def generate_manifest(template_manifest_path: str,
         manifest.save(output_path)
         print(f"Manifest saved to {output_path}")
 
-    return manifest
+    return output_path
+
+def generate_component_manifest(
+    base_manifest_path: Path,
+    component: str,
+    version: str,
+    tarball_path: str,
+    serve_url: str,
+    output_path: Path
+) -> Path:
+    """Generate manifest with update for single component only."""
+    manifest = Manifest(str(base_manifest_path))
+    
+    # Update only the specified component
+    tarball_name = Path(tarball_path).name
+    url = f"{serve_url}/{tarball_name}"
+    
+    if component == "inference":
+        # Add new inference version
+        manifest.inference_clients[version] = InferenceClient(
+            date=manifest.inference_clients[list(manifest.inference_clients.keys())[0]].date,
+            url=url
+        )
+    else:
+        current_component = getattr(manifest, f"current_{component}")
+        current_component.version = version
+        current_component.url = url
+    
+    manifest.save(str(output_path))
+    return output_path
 
 def serve_test_files(test_folder: Path, port: int = 8000):
     os.chdir(test_folder)
@@ -200,18 +230,6 @@ def serve_test_files(test_folder: Path, port: int = 8000):
     server_thread.start()
     
     return server
-
-
-# =========== Test fixtures =============
-@pytest.fixture(scope="session")
-def server(test_environment):
-    """New server for each test."""
-    server = MoondreamServer(...)
-    yield server
-    server.stop()
-
-# ==================== Tests ====================
-
 
 # ====================
 
@@ -281,6 +299,63 @@ def get_versions_from_args(args, components: list[str], test_path: str):
     
     return base_versions, test_versions
 
+# ==================
+def test_bootstrap_update(executable_path, base_manifest_path, test_path, test_versions, test_copied, localhost_url):
+    # rebuild base version
+    build_base_version(str(base_manifest_path))
+    component = 'bootstrap'
+
+    base_manifest = Manifest(str(base_manifest_path))
+    bootstrap_manifest_path = test_path / 'bootstrap_update_manifest.json'
+    
+
+    generate_component_manifest(
+        base_manifest_path=base_manifest_path,
+        component=component,
+        version=test_versions[component],
+        tarball_path=test_copied[component]["path"],
+        serve_url=f"{localhost_url}/tarfiles",
+        output_path=bootstrap_manifest_path
+    )
+
+    bootstrap_manifest = Manifest(str(bootstrap_manifest_path))
+    
+    moondream = MoondreamServer(
+        str(executable_path),
+        base_manifest_url=f"{localhost_url}/base_manifest.json",
+        update_manifest_url=f"{localhost_url}/bootstrap_update_manifest.json"
+    )
+
+    if bootstrap_manifest.current_bootstrap.version == base_manifest.current_bootstrap.version:
+        print(f"Bootstrap test skipped - no version change ({base_manifest.current_bootstrap.version})")
+        return True 
+        
+
+    try:
+        moondream.start(use_update_manifest=False)
+        versions = moondream.get_versions()
+        assert versions[component] == base_manifest.current_bootstrap.version, f"Wrong initial version: {versions[component]}"
+        moondream.restart(True) #starts with updated manifest!
+        
+        assert moondream.check_updates() == True, f"Check updates does not show any update!"
+
+        moondream.update_component("bootstrap") # this will kill the process
+        time.sleep(10) # TODO: get rid of arbitrary sleep amount (this is to give ample time for update!)
+
+        moondream.start(use_update_manifest=True)
+        final_versions = moondream.get_versions()
+
+        assert final_versions[component] == bootstrap_manifest.current_bootstrap.version
+        print("✅ Bootstrap update successful!")
+        return True
+
+    except Exception as e:
+        print(f"❌ Bootstrap test failed: {e}")
+        return False
+    finally:
+        moondream.stop()
+
+
 def main():
 
     # what to not reset each test:
@@ -294,14 +369,19 @@ def main():
     # server should start from base manifest each time
     
     args = parse_arguments()
-
+    
     test_path = Path(__file__).parent / TEST_FOLDER
+    parent_dir = test_path.parent
     template_manifest_path = test_path / 'template_manifest.json'
     base_manifest_path = test_path / 'base_manifest.json'
     test_manifest_path = test_path / 'test_manifest.json'
     test_models_path = test_path / 'test_models.json'
+    executable_path = parent_dir / 'output/moondream_station/moondream_station'
+
     localhost_port = args.port
     localhost_url = f"http://localhost:{localhost_port}"
+    base_manifest_url = f"{localhost_url}/base_manifest.json"
+    update_manifest_url = f"{localhost_url}/test_manifest.json"
 
     components = ["bootstrap", "hypervisor", "cli", "inference"]
        
@@ -331,23 +411,29 @@ def main():
 
     # if we do not expect manifest to be present through the args, we need to build it.
     if not args.base_manifest:
-        print(f"\n Building base manifest!")
-        generate_manifest(template_manifest_path=str(template_manifest_path),
+        print(f"\n============ Building Base Manifest ================")
+    generate_manifest(template_manifest_path=str(template_manifest_path),
                     tarball_info=base_copied,
                     serve_url=f"{localhost_url}/tarfiles",
                     output_path=str(base_manifest_path),
+                    new_manifest_version="v0.0.1"
                     # no models.json in here cause we want to use the same as the template
                 )
+    
     if not args.test_manifest:
-        print(f"\n Building test manifest!")
-        generate_manifest(template_manifest_path=str(base_manifest_path),
+        print(f"\n============ Building Test Manifest ================")
+    generate_manifest(template_manifest_path=str(base_manifest_path),
                     tarball_info=test_copied,
                     serve_url=f"{localhost_url}/tarfiles",
                     output_path=str(test_manifest_path),
                     models_json=str(test_models_path),
                     )
+
+    # Start HTTP server at port
+    print(f"\n============ Starting HTTP Server ================")
+    server = serve_test_files(test_folder=test_path, port=localhost_port)
     
-    
+    # now we setup the individual manifests
 
     
 if __name__ == "__main__":
