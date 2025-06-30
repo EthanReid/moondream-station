@@ -104,8 +104,16 @@ class MoondreamServer:
         except Exception as e:
             raise RuntimeError(f"Failed to pull manifest: {e}")
         
-    def check_updates(self) -> dict[str, str]:
-        """Check which components have updates available."""
+    def check_updates(self, component: str = None) -> bool:
+        """
+        Check if a component has updates available.
+        
+        Args:
+            component: Component name to check
+        
+        Returns:
+            True if update available, False otherwise
+        """
         output = self.run_command("admin check-updates", expect=self.prompt, timeout=self.timeout)
         
         # Clean up spinner/progress artifacts
@@ -118,13 +126,18 @@ class MoondreamServer:
         status = {}
         for line in lines:
             if ':' in line and (' - Up to date' in line or ' - Update available' in line):
-                component = line.split(':')[0].strip().lower()
+                comp = line.split(':')[0].strip().lower()
                 if ' - Up to date' in line:
-                    status[component] = 'up_to_date'
+                    status[comp] = 'up_to_date'
                 elif ' - Update available' in line:
-                    status[component] = 'update_available'
+                    status[comp] = 'update_available'
         
-        return status
+        # Return boolean for the component
+        if component:
+            return status.get(component.lower()) == 'update_available'
+        
+        # If no component specified, could return False or raise error
+        return False
 
     def update_component(self, component: str) -> bool:
         """Update component with component-specific behavior."""
