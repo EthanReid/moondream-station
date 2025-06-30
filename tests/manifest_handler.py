@@ -27,8 +27,7 @@ class Manifest:
         self.current_cli = Component(**data["current_cli"])
         self.current_hypervisor = Component(**data["current_hypervisor"])
         
-        # Models (#TODO : we will keep this as a dict for now!)
-        self.models = data["models"]
+        self.models = data["models"] #This gets loaded from models.json!
         
         # Inference clients
         self.inference_clients = {
