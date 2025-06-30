@@ -5,7 +5,6 @@ from http.server import SimpleHTTPRequestHandler, HTTPServer
 from manifest_handler import Manifest, InferenceClient
 from server_handler import MoondreamServer
 
-TARBALL_BASE = "output"
 TEST_FOLDER = "test_files"
 
 def create_and_copy_tarball(
@@ -89,13 +88,6 @@ def create_and_copy_tarball(
         
     return copied
 
-def model_uses_version(models, version):
-    return any(
-        model.get("inference_client") == version
-        for category in models.values()
-        for model in category.values()
-    )
-
 def build_base_version(base_manifest_path: str, system: str = 'ubuntu', app_dir=None) -> None:
     repo_dir = Path(__file__).parent.parent
 
@@ -124,6 +116,7 @@ def build_base_version(base_manifest_path: str, system: str = 'ubuntu', app_dir=
 
 def generate_component_manifest(
     base_manifest_path: Path,
+    test_manifest_path: Path,  # Add this parameter
     component: str,
     version: str,
     tarball_path: str,
@@ -132,18 +125,24 @@ def generate_component_manifest(
 ) -> Path:
     """Generate manifest with update for single component only."""
     manifest = Manifest(str(base_manifest_path))
-    
-    # Update only the specified component
-    tarball_name = Path(tarball_path).name
-    url = f"{serve_url}/{tarball_name}"
+    test_manifest = Manifest(str(test_manifest_path))
     
     if component == "inference":
-        # Add new inference version
+        # For inference testing, use models from test manifest
+        tarball_name = Path(tarball_path).name
+        url = f"{serve_url}/{tarball_name}"
+        manifest.models = test_manifest.models
         manifest.inference_clients[version] = InferenceClient(
             date=manifest.inference_clients[list(manifest.inference_clients.keys())[0]].date,
             url=url
         )
+    elif component == "model":
+        # For model testing, use inference clients from test manifest
+        manifest.inference_clients = test_manifest.inference_clients
+        manifest.models = test_manifest.models
     else:
+        tarball_name = Path(tarball_path).name
+        url = f"{serve_url}/{tarball_name}"
         current_component = getattr(manifest, f"current_{component}")
         current_component.version = version
         current_component.url = url
@@ -211,69 +210,33 @@ def parse_arguments():
     
     return parser.parse_args()
 
-def get_versions_from_args(args, components: list[str], test_path: str):
-    """Extract base and test versions from arguments."""
-
-    # Get base versions
-    if args.base_manifest:
-        manifest_path = test_path / 'base_manifest.json'
-        if not manifest_path.exists():
-            raise FileNotFoundError(f"Base manifest not found at {manifest_path}")
-        base_manifest = Manifest(str(manifest_path))
-        base_versions = {
-            "bootstrap": base_manifest.current_bootstrap.version,
-            "cli": base_manifest.current_cli.version,
-            "hypervisor": base_manifest.current_hypervisor.version,
-            "inference": list(base_manifest.inference_clients.keys())[0]
-        }
-    else:
-        base_versions = json.loads(args.base_versions)
-        # Fill in default as v0.0.1 for base manifest
-        for comp in components:
-            base_versions.setdefault(comp, "v0.0.1")
-    
-    # Get test versions
-    if args.test_manifest:
-        manifest_path = test_path / 'test_manifest.json'
-        if not manifest_path.exists():
-            raise FileNotFoundError(f"Test manifest not found at {manifest_path}")
-        test_manifest = Manifest(str(manifest_path))
-        test_versions = {
-            "bootstrap": test_manifest.current_bootstrap.version,
-            "cli": test_manifest.current_cli.version,
-            "hypervisor": test_manifest.current_hypervisor.version,
-            "inference": list(test_manifest.inference_clients.keys())[0]
-        }
-    else:
-        test_versions = json.loads(args.test_versions)
-        # we don't need defaults for versions cause we will use the versions in base manifest as default.
-    
-    return base_versions, test_versions
-
 # ==================
-def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_manifest_path, test_path, test_versions, test_copied, localhost_url, update_timeout:int=5):
+def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_manifest_path, test_manifest_path, test_path, localhost_url, update_timeout:int=5):
 
     base_manifest = Manifest(str(base_manifest_path))
+    test_manifest = Manifest(str(test_manifest_path))
+
+    base_version = getattr(base_manifest, f"current_{component}").version
+    test_version = getattr(test_manifest, f"current_{component}").version
+
+    if test_version == base_version:
+        print(f"{component} test skipped - no version change ({test_version})")
+        return True 
+
+    test_url = getattr(test_manifest, f"current_{component}").url
+    tarball_path = test_url.split('/')[-1]
+
     component_manifest_path = test_path / f'{component}_update_manifest.json'
     
-
     generate_component_manifest(
         base_manifest_path=base_manifest_path,
+        test_manifest_path=test_manifest_path,
         component=component,
-        version=test_versions[component],
-        tarball_path=test_copied[component]["path"],
+        version=test_version,
+        tarball_path=tarball_path,
         serve_url=f"{localhost_url}/tarfiles",
         output_path=component_manifest_path
     )
-
-    component_manifest = Manifest(str(component_manifest_path))
-
-    component_version = getattr(component_manifest, f"current_{component}").version
-    base_version = getattr(base_manifest, f"current_{component}").version
-
-    if component_version == base_version:
-        print(f"{component} test skipped - no version change ({component_version})")
-        return True 
 
     build_base_version(str(base_manifest_path))
     
@@ -286,7 +249,7 @@ def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_ma
     try:
         moondream.start(use_update_manifest=False)
         versions = moondream.get_versions()
-        assert versions[component] == component_version, f"Wrong initial version: {versions[component]}"
+        assert versions[component] == base_version, f"Wrong initial version: {versions[component]}"
         moondream.restart(True) #starts with updated manifest!
         
         assert moondream.check_updates() == True, f"Check updates does not show any update!"
@@ -297,18 +260,17 @@ def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_ma
         moondream.start(use_update_manifest=True)
         final_versions = moondream.get_versions()
 
-        assert final_versions[component] == component_version
-        print("✅ Bootstrap update successful!")
+        assert final_versions[component] == test_version
+        print(f"✅ {component} update successful!")
         return True
 
     except Exception as e:
-        print(f"❌ Bootstrap test failed: {e}")
+        print(f"❌ {component} test failed: {e}")
         return False
     finally:
         moondream.stop()
 
 def main():
-
     # what to not reset each test:
     # built tarballs - expensive to build each time.
     # http server - only serves files
@@ -325,6 +287,11 @@ def main():
     if args.test:
         try:
             test_components = json.loads(args.test)
+            invalid = [c for c in test_components if c not in valid_components] # TODO: simplify by using sets
+            if invalid:
+                print(f"ERROR: Invalid components specified: {invalid}")
+                print(f"Valid components are: {valid_components}")
+                return
         except json.JSONDecodeError:
             print(f"ERROR: Invalid JSON for --test argument: {args.test}")
             return
@@ -395,8 +362,9 @@ def main():
         if component == "model":
             print(f"\n--- Model testing not yet implemented ---")
             continue
-        if component == "inference":
+        elif component == "inference":
             print(f"\n--- Inference testing not yet implemented ---")
+            continue
         test_bootstrap_hypervisor_cli_update(
             component=component,
             executable_path=executable_path,
