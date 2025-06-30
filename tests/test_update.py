@@ -237,6 +237,9 @@ def parse_arguments():
                            help='Test versions JSON, e.g. \'{"bootstrap": "v0.0.2"}\'')
     test_group.add_argument("--test-manifest", action="store_true",
                            help="Use ./test_files/test_manifest.json")
+    parser.add_argument("--port", type=int,
+                        default=8000,
+                        help='Port at which to start the webserver to serve manifests and tarfiles.')
     return parser.parse_args()
 
 def get_versions_from_args(args, components: list[str], test_path: str):
@@ -297,17 +300,53 @@ def main():
     base_manifest_path = test_path / 'base_manifest.json'
     test_manifest_path = test_path / 'test_manifest.json'
     test_models_path = test_path / 'test_models.json'
+    localhost_port = args.port
+    localhost_url = f"http://localhost:{localhost_port}"
 
     components = ["bootstrap", "hypervisor", "cli", "inference"]
        
     try:
         base_versions, test_versions = get_versions_from_args(args, components, test_path)
         
-        print(f"Base versions: {base_versions}")
-        print(f"Test versions: {test_versions}")
+        print(f"\nBase versions: {base_versions}")
+        print(f"\nTest versions: {test_versions}")
 
     except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f"ERROR: {e}")
+    
+    # now we will build the tarfiles using the test versions and base versions
+
+    print(f"\n============ Building Tarfiles ================")
+    print(f"Building base tarfiles")
+    base_copied = create_and_copy_tarball(components=base_versions,
+                                             test_folder=test_path
+                                             )
+    print(f"Copied base tarballs to {test_path}/tarfiles")
+    
+    print(f"\nBuilding test tarfiles")
+    test_copied = create_and_copy_tarball(components=test_versions,
+                            test_folder=test_path,
+                                system="ubuntu")
+    print(f"Copied test tarballs to {test_path}/tarfiles")
+
+    # if we do not expect manifest to be present through the args, we need to build it.
+    if not args.base_manifest:
+        print(f"\n Building base manifest!")
+        generate_manifest(template_manifest_path=str(template_manifest_path),
+                    tarball_info=base_copied,
+                    serve_url=f"{localhost_url}/tarfiles",
+                    output_path=str(base_manifest_path),
+                    # no models.json in here cause we want to use the same as the template
+                )
+    if not args.test_manifest:
+        print(f"\n Building test manifest!")
+        generate_manifest(template_manifest_path=str(base_manifest_path),
+                    tarball_info=test_copied,
+                    serve_url=f"{localhost_url}/tarfiles",
+                    output_path=str(test_manifest_path),
+                    models_json=str(test_models_path),
+                    )
+    
     
 
     
