@@ -140,10 +140,12 @@ class MoondreamServer:
         return False
 
     def update_component(self, component: str) -> bool:
-        """Update component with component-specific behavior."""
+        """Update component with component-specific behavior.
+        Only works if the components are one of Bootstrap, CLI, Hypervisor or Model
+        """
         pattern = self.update_patterns[component]
         
-        if component == 'cli':
+        if component == 'cli' or 'model':
             cmd = "admin update --confirm"
         else:
             cmd = f"admin update-{component} --confirm"
@@ -165,4 +167,78 @@ class MoondreamServer:
             raise RuntimeError(f"{component} update failed - pattern not found")
         
         return True
-           
+    
+    def get_model_list(self) -> list[str]:
+        """Get list of available models."""
+        output = self.run_command("admin model-list", expect=self.prompt)
+        
+        # Extract model names - they appear after "Model: "
+        models = []
+        for line in output.split('\n'):
+            if line.strip().startswith('Model: '):
+                model_name = line.split('Model: ', 1)[1].strip()
+                models.append(model_name)
+        
+        return models
+    
+    def get_current_model(self) -> str:
+        """Get currently active model from config."""
+        config_output = self.run_command("admin get-config", expect=self.prompt)
+        
+        # Look for active_model in config
+        if match := re.search(r'active_model:\s+(.+)', config_output):
+            return match.group(1).strip()
+        
+        return None
+    
+    def use_model(self, model_name: str, timeout:int = 300) -> bool:
+        """Switch to a specific model."""
+        try:
+            output = self.run_command(
+                f'admin model-use "{model_name}" --confirm',
+                expect=self.prompt,
+                timeout=timeout  # model switching can take time
+            )
+            
+            # Check for success indicators
+            if 'Model initialization completed successfully' in output:
+                print(f"Successfully switched to model: {model_name}")
+                return True
+            else:
+                print(f"Model switch may have failed. Output: {output[:200]}...")
+                return False
+                
+        except Exception as e:
+            print(f"Failed to switch to model {model_name}: {e}")
+            return False
+
+    def swap_models(self) -> tuple[str, str]:
+        """Swap between two available models.
+        Returns: (previous_model, new_model)
+        """
+        # Get available models
+        models = self.get_model_list()
+        if len(models) < 2:
+            raise ValueError(f"Need at least 2 models to swap, found {len(models)}")
+        
+        # Get current model
+        current_model = self.get_current_model()
+        print(f"Current model: {current_model}")
+        
+        # Find a different model to switch to
+        new_model = None
+        for model in models:
+            if model != current_model:
+                new_model = model
+                break
+        
+        if not new_model:
+            # fallback for safety : we try and use first model if current not in list
+            new_model = models[0] if models[0] != current_model else models[1]
+        
+        # Switch to new model
+        print(f"Switching from {current_model} to {new_model}")
+        if self.use_model(new_model):
+            return (current_model, new_model)
+        else:
+            raise RuntimeError(f"Failed to switch to model {new_model}")
