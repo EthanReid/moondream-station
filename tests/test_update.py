@@ -1,6 +1,4 @@
 import os, subprocess, shutil, json, threading, time
-import requests
-import pytest
 from pathlib import Path
 import argparse
 from http.server import SimpleHTTPRequestHandler, HTTPServer
@@ -124,72 +122,6 @@ def build_base_version(base_manifest_path: str, system: str = 'ubuntu', app_dir=
         raise RuntimeError(f"Dev build failed: {result.stderr}")
     print(f"Dev build output:\n{result.stdout}")
 
-def generate_manifest(template_manifest_path: str,
-                      tarball_info: dict[str, dict[str, str]],
-                      serve_url: str,
-                      models_json: str = None,
-                      output_path: str = None,
-                      new_manifest_version: str = "v0.0.2") -> Path:
-    """
-    Generate a manifest based on the base manifest and the provided tarball information.
-    Args:
-        base_manifest_path (str): Path to the base manifest JSON file.
-        tarball_info (dict): A dictionary containing component names as keys and their version and path
-                                as values. Example: {"bootstrap": {"version": "v0.0.2", "path": "path/to/tarball"}}
-        serve_url (str): The URL where the tarballs will be served.
-        models_json (str, optional): Path to a JSON file containing models to be included in the manifest.
-        output_path (str, optional): Path where the generated manifest will be saved.
-        new_manifest_version (str, optional): The version of the manifest to be generated. Defaults to "v0.0.2".
-    Returns:
-        output_path: The path at which the generated manifest is saved.
-    """
-    
-    manifest = Manifest(template_manifest_path)
-    print(manifest.to_dict())
-
-    # Update manifest version
-    manifest.manifest_version = new_manifest_version
-
-    # If models_json is provided, update the manifest with models
-    if models_json:
-        with open(models_json, 'r') as f:
-            test_models = json.load(f)
-        
-        total_models = sum(len(category) for category in test_models.values())
-        if total_models == 0:
-            raise ValueError("Models JSON must contain at least one model")
-        
-        manifest.models = test_models
-        print(f"Replaced models from {models_json}")
-
-    for component, info in tarball_info.items():
-        version = info["version"]
-        tarball_name = Path(info["path"]).name
-        url = f"{serve_url}/{tarball_name}"
-
-        print(f"Updating manifest for {component} with version {version} and URL {url}") #TODO: Remove this in prod
-        
-        if component == "inference":
-            if not model_uses_version(manifest.models, version):
-                print(f"WARNING: No models use inference_client {version}")
-
-            curr_version = list(manifest.inference_clients.keys())[0]
-            curr_date = manifest.inference_clients[curr_version].date
-            manifest.inference_clients[version] = InferenceClient(
-                date=curr_date, # TODO: Allow update with user defined date?
-                url=url
-            )
-        else:
-            current_component = getattr(manifest, f"current_{component}")
-            current_component.version = version
-            current_component.url = url
-
-    if output_path:
-        manifest.save(output_path)
-        print(f"Manifest saved to {output_path}")
-
-    return output_path
-
 def generate_component_manifest(
     base_manifest_path: Path,
     component: str,
@@ -219,6 +151,33 @@ def generate_component_manifest(
     manifest.save(str(output_path))
     return output_path
 
+def extract_versions_from_manifest(manifest: Manifest) -> dict[str, str]:
+    """Extract component versions from a manifest."""
+    versions = {
+        "bootstrap": manifest.current_bootstrap.version,
+        "cli": manifest.current_cli.version,
+        "hypervisor": manifest.current_hypervisor.version,
+    }
+    # For inference, get the first/latest version
+    if manifest.inference_clients:
+        versions["inference"] = list(manifest.inference_clients.keys())[0]
+    return versions
+
+def update_manifest_urls(manifest: Manifest, tarball_info: dict, serve_url: str) -> None:
+    """Update manifest URLs to point to local tarfiles."""
+    for component, info in tarball_info.items():
+        version = info["version"]
+        tarball_name = Path(info["path"]).name
+        url = f"{serve_url}/tarfiles/{tarball_name}"
+        
+        if component == "inference":
+            if version in manifest.inference_clients:
+                manifest.inference_clients[version].url = url
+        else:
+            current_component = getattr(manifest, f"current_{component}")
+            if current_component.version == version:
+                current_component.url = url
+
 def serve_test_files(test_folder: Path, port: int = 8000):
     os.chdir(test_folder)
     server = HTTPServer(('localhost', port), SimpleHTTPRequestHandler)
@@ -238,26 +197,18 @@ def parse_arguments():
         description="Run Moondream Station update tests",
         formatter_class = argparse.RawDescriptionHelpFormatter
     )
-
-    # get the start state
-    # start state can be either just versions, or a full on manifest.json
-    # it's on the user that the input manifest.json is correct
-
-    # using a mutually exclusive group means we only need to use one of the arguments.
-    base_group = parser.add_mutually_exclusive_group(required=True)
-    base_group.add_argument("--base-versions", type=str, 
-                           help='Base versions JSON, e.g. \'{"bootstrap": "v0.0.1"}\'')
-    base_group.add_argument("--base-manifest", action="store_true",
-                           help="Use ./test_files/base_manifest.json")
-
-    test_group = parser.add_mutually_exclusive_group(required=True)
-    test_group.add_argument("--test-versions", type=str,
-                           help='Test versions JSON, e.g. \'{"bootstrap": "v0.0.2"}\'')
-    test_group.add_argument("--test-manifest", action="store_true",
-                           help="Use ./test_files/test_manifest.json")
-    parser.add_argument("--port", type=int,
-                        default=8000,
-                        help='Port at which to start the webserver to serve manifests and tarfiles.')
+    
+    parser.add_argument("--base-manifest", type=str, required=True,
+                       help="Path to base manifest JSON file")
+    parser.add_argument("--test-manifest", type=str, required=True,
+                       help="Path to test manifest JSON file")
+    parser.add_argument("--test", type=str, required=False,
+                       help='JSON list of components to test, e.g. \'["bootstrap", "hypervisor", "cli", "inference"]\'')
+    parser.add_argument("--preserve-tarfile-links", action="store_true",
+                       help="Use existing tarfile URLs from manifests instead of building new ones")
+    parser.add_argument("--port", type=int, default=8000,
+                       help='Port at which to start the webserver to serve manifests and tarfiles.')
+    
     return parser.parse_args()
 
 def get_versions_from_args(args, components: list[str], test_path: str):
@@ -369,71 +320,95 @@ def main():
     # server should start from base manifest each time
     
     args = parse_arguments()
-    
+    valid_components = ["bootstrap", "hypervisor", "model", "cli", "inference"]
+
+    if args.test:
+        try:
+            test_components = json.loads(args.test)
+        except json.JSONDecodeError:
+            print(f"ERROR: Invalid JSON for --test argument: {args.test}")
+            return
+    else:
+        test_components = valid_components
+
     test_path = Path(__file__).parent / TEST_FOLDER
     parent_dir = test_path.parent
-    template_manifest_path = test_path / 'template_manifest.json'
-    base_manifest_path = test_path / 'base_manifest.json'
-    test_manifest_path = test_path / 'test_manifest.json'
-    test_models_path = test_path / 'test_models.json'
     executable_path = parent_dir / 'output/moondream_station/moondream_station'
-
     localhost_port = args.port
     localhost_url = f"http://localhost:{localhost_port}"
-    base_manifest_url = f"{localhost_url}/base_manifest.json"
-    update_manifest_url = f"{localhost_url}/test_manifest.json"
+    
+    # Load manifests using Manifest object
+    base_manifest = Manifest(args.base_manifest)
+    test_manifest = Manifest(args.test_manifest)
 
-    components = ["bootstrap", "hypervisor", "cli", "inference"]
-       
-    try:
-        base_versions, test_versions = get_versions_from_args(args, components, test_path)
+    latest_inference = max(base_manifest.inference_clients.keys(), 
+                      key=lambda v: [int(x) for x in v[1:].split('.')])
+    if not any(model.get("inference_client") == latest_inference 
+            for category in base_manifest.models.values() 
+            for model in category.values()):
+        print(f"ERROR: No models in base manifest use latest inference client '{latest_inference}'")
+        return
+    
+    if not args.preserve_tarfile_links:
+        print(f"\n============ Building Tarfiles ================")
         
-        print(f"\nBase versions: {base_versions}")
-        print(f"\nTest versions: {test_versions}")
-
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"ERROR: {e}")
+        # Extract versions from manifests
+        base_versions = extract_versions_from_manifest(base_manifest)
+        test_versions = extract_versions_from_manifest(test_manifest)
+        
+        print(f"Base versions: {base_versions}")
+        print(f"Test versions: {test_versions}")
+        
+        # Build tarfiles for all components
+        print(f"\nBuilding base tarfiles")
+        base_copied = create_and_copy_tarball(
+            components=base_versions,
+            test_folder=test_path
+        )
+        
+        print(f"\nBuilding test tarfiles")
+        test_copied = create_and_copy_tarball(
+            components=test_versions,
+            test_folder=test_path
+        )
+        
+        # Update manifest URLs to point to local tarfiles
+        update_manifest_urls(base_manifest, base_copied, localhost_url)
+        update_manifest_urls(test_manifest, test_copied, localhost_url)
     
-    # now we will build the tarfiles using the test versions and base versions
-
-    print(f"\n============ Building Tarfiles ================")
-    print(f"Building base tarfiles")
-    base_copied = create_and_copy_tarball(components=base_versions,
-                                             test_folder=test_path
-                                             )
-    print(f"Copied base tarballs to {test_path}/tarfiles")
+    # Save manifests to test folder
+    base_manifest_path = test_path / 'base_manifest.json'
+    test_manifest_path = test_path / 'test_manifest.json'
     
-    print(f"\nBuilding test tarfiles")
-    test_copied = create_and_copy_tarball(components=test_versions,
-                            test_folder=test_path,
-                                system="ubuntu")
-    print(f"Copied test tarballs to {test_path}/tarfiles")
-
-    # if we do not expect manifest to be present through the args, we need to build it.
-    if not args.base_manifest:
-        print(f"\n============ Building Base Manifest ================")
-    generate_manifest(template_manifest_path=str(template_manifest_path),
-                    tarball_info=base_copied,
-                    serve_url=f"{localhost_url}/tarfiles",
-                    output_path=str(base_manifest_path),
-                    new_manifest_version="v0.0.1"
-                    # no models.json in here cause we want to use the same as the template
-                )
-    
-    if not args.test_manifest:
-        print(f"\n============ Building Test Manifest ================")
-    generate_manifest(template_manifest_path=str(base_manifest_path),
-                    tarball_info=test_copied,
-                    serve_url=f"{localhost_url}/tarfiles",
-                    output_path=str(test_manifest_path),
-                    models_json=str(test_models_path),
-                    )
+    base_manifest.save(str(base_manifest_path))
+    test_manifest.save(str(test_manifest_path))
 
     # Start HTTP server at port
     print(f"\n============ Starting HTTP Server ================")
     server = serve_test_files(test_folder=test_path, port=localhost_port)
+
+    print(f"\n============ Running Component Tests ================")
     
-    # now we setup the individual manifests
+    # Only test the specified components
+    for component in test_components:
+        print(f"\n--- Testing {component} update ---")
+        if component == "model":
+            print(f"\n--- Model testing not yet implemented ---")
+            continue
+        if component == "inference":
+            print(f"\n--- Inference testing not yet implemented ---")
+        test_bootstrap_hypervisor_cli_update(
+            component=component,
+            executable_path=executable_path,
+            base_manifest_path=base_manifest_path,
+            test_manifest_path=test_manifest_path,
+            test_path=test_path,
+            localhost_url=localhost_url
+        )
+    
+    print(f"\n============ Stopping HTTP Server ================")
+    server.shutdown() #TODO: Make it so if anything happens, server shuts down!
+    
 
     
 if __name__ == "__main__":
