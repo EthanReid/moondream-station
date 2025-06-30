@@ -1,4 +1,4 @@
-import os, subprocess, shutil, json, threading, time
+import os, subprocess, shutil, threading
 from pathlib import Path
 REPO_DIR = Path(__file__).parent.parent
 TEST_FOLDER = "test_files"
