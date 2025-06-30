@@ -1,6 +1,7 @@
 import pexpect
 import time
 import re
+import json
 
 class MoondreamServer:
     """Manages server lifecycle and commands."""
@@ -212,33 +213,42 @@ class MoondreamServer:
             print(f"Failed to switch to model {model_name}: {e}")
             return False
 
-    def swap_models(self) -> tuple[str, str]:
-        """Swap between two available models.
-        Returns: (previous_model, new_model)
-        """
-        # Get available models
-        models = self.get_model_list()
-        if len(models) < 2:
-            raise ValueError(f"Need at least 2 models to swap, found {len(models)}")
+    def test_model_capabilities(self, model_name: str, image_url: str, expected_json: str = "expected_responses.json") -> dict[str, bool]:
+        """Test all capabilities for a model. Returns pass/fail for each."""
+        try:
+            with open(expected_json, 'r') as f:
+                expected = json.load(f)
+        except:
+            return {"error": False}
+            
+        if model_name not in expected:
+            return {"error": False}
         
-        # Get current model
-        current_model = self.get_current_model()
-        print(f"Current model: {current_model}")
+        model_exp = expected[model_name]
+        tests = [
+            ('caption', f'caption {image_url}', model_exp.get('caption_normal', model_exp.get('caption', {}))),
+            ('query', f'query "What is in this image?" {image_url}', model_exp.get('query', {})),
+            ('detect', f'detect face {image_url}', model_exp.get('detect', '')),
+            ('point', f'point face {image_url}', model_exp.get('point', ''))
+        ]
         
-        # Find a different model to switch to
-        new_model = None
-        for model in models:
-            if model != current_model:
-                new_model = model
-                break
+        results = {}
+        for test_name, cmd, exp in tests:
+            try:
+                output = self.run_command(cmd, expect=self.prompt, timeout=60)
+                
+                # Clean output
+                lines = output.split('\n')
+                cleaned = ' '.join(line.strip() for line in lines 
+                                if line.strip() and not line.startswith(cmd.split()[0]))
+                
+                # Check expected
+                if isinstance(exp, dict) and 'keywords' in exp:
+                    results[test_name] = any(kw.lower() in cleaned.lower() for kw in exp['keywords'])
+                else:
+                    results[test_name] = str(exp) in cleaned
+                    
+            except Exception:
+                results[test_name] = False
         
-        if not new_model:
-            # fallback for safety : we try and use first model if current not in list
-            new_model = models[0] if models[0] != current_model else models[1]
-        
-        # Switch to new model
-        print(f"Switching from {current_model} to {new_model}")
-        if self.use_model(new_model):
-            return (current_model, new_model)
-        else:
-            raise RuntimeError(f"Failed to switch to model {new_model}")
+        return results

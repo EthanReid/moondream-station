@@ -2,10 +2,12 @@ import os, subprocess, shutil, json, threading, time
 from pathlib import Path
 import argparse
 from http.server import SimpleHTTPRequestHandler, HTTPServer
-from manifest_handler import Manifest, InferenceClient
+from manifest_handler import Manifest, generate_component_manifest, update_manifest_urls, extract_versions_from_manifest
 from server_handler import MoondreamServer
 
 TEST_FOLDER = "test_files"
+REPO_DIR = Path(__file__).parent.parent
+DEFAULT_IMAGE_URL = "https://raw.githubusercontent.com/m87-labs/moondream-station/refs/heads/main/assets/md_logo_clean.png"
 
 def create_and_copy_tarball(
         components: dict[str, str], # {"bootstrap": "v0.0.2", "hypervisor": "v0.0.1"}
@@ -25,7 +27,7 @@ def create_and_copy_tarball(
     Returns:
         dict: A dictionary where keys are component names and values are the paths to the extracted tar
     """
-    repo_dir = Path(__file__).parent.parent
+    repo_dir = REPO_DIR
 
     if app_dir is not None:
         app_path = Path(app_dir).resolve()
@@ -89,7 +91,7 @@ def create_and_copy_tarball(
     return copied
 
 def build_base_version(base_manifest_path: str, system: str = 'ubuntu', app_dir=None) -> None:
-    repo_dir = Path(__file__).parent.parent
+    repo_dir = REPO_DIR
 
     if app_dir is not None:
         app_path = Path(app_dir).resolve()
@@ -114,68 +116,7 @@ def build_base_version(base_manifest_path: str, system: str = 'ubuntu', app_dir=
         raise RuntimeError(f"Dev build failed: {result.stderr}")
     print(f"Dev build output:\n{result.stdout}")
 
-def generate_component_manifest(
-    base_manifest_path: Path,
-    test_manifest_path: Path,  # Add this parameter
-    component: str,
-    version: str,
-    tarball_path: str,
-    serve_url: str,
-    output_path: Path
-) -> Path:
-    """Generate manifest with update for single component only."""
-    manifest = Manifest(str(base_manifest_path))
-    test_manifest = Manifest(str(test_manifest_path))
-    
-    if component == "inference":
-        # For inference testing, use models from test manifest
-        tarball_name = Path(tarball_path).name
-        url = f"{serve_url}/{tarball_name}"
-        manifest.models = test_manifest.models
-        manifest.inference_clients[version] = InferenceClient(
-            date=manifest.inference_clients[list(manifest.inference_clients.keys())[0]].date,
-            url=url
-        )
-    elif component == "model":
-        # For model testing, use inference clients from test manifest
-        manifest.inference_clients = test_manifest.inference_clients
-        manifest.models = test_manifest.models
-    else:
-        tarball_name = Path(tarball_path).name
-        url = f"{serve_url}/{tarball_name}"
-        current_component = getattr(manifest, f"current_{component}")
-        current_component.version = version
-        current_component.url = url
-    
-    manifest.save(str(output_path))
-    return output_path
 
-def extract_versions_from_manifest(manifest: Manifest) -> dict[str, str]:
-    """Extract component versions from a manifest."""
-    versions = {
-        "bootstrap": manifest.current_bootstrap.version,
-        "cli": manifest.current_cli.version,
-        "hypervisor": manifest.current_hypervisor.version,
-    }
-    # For inference, get the first/latest version
-    if manifest.inference_clients:
-        versions["inference"] = list(manifest.inference_clients.keys())[0]
-    return versions
-
-def update_manifest_urls(manifest: Manifest, tarball_info: dict, serve_url: str) -> None:
-    """Update manifest URLs to point to local tarfiles."""
-    for component, info in tarball_info.items():
-        version = info["version"]
-        tarball_name = Path(info["path"]).name
-        url = f"{serve_url}/tarfiles/{tarball_name}"
-        
-        if component == "inference":
-            if version in manifest.inference_clients:
-                manifest.inference_clients[version].url = url
-        else:
-            current_component = getattr(manifest, f"current_{component}")
-            if current_component.version == version:
-                current_component.url = url
 
 def serve_test_files(test_folder: Path, port: int = 8000):
     os.chdir(test_folder)
@@ -203,15 +144,61 @@ def parse_arguments():
                        help="Path to test manifest JSON file")
     parser.add_argument("--test", type=str, required=False,
                        help='Comma-separated list of components to test, e.g. "bootstrap,hypervisor,cli,inference"')
+    parser.add_argument("--with-capability", action="store_true",
+                       help="Run capability tests after successful updates")
     parser.add_argument("--preserve-tarfile-links", action="store_true",
                        help="Use existing tarfile URLs from manifests instead of building new ones")
     parser.add_argument("--port", type=int, default=8000,
                        help='Port at which to start the webserver to serve manifests and tarfiles.')
+    parser.add_argument("--system", type=str, default='ubuntu',
+                        help='System for which to build and test moondream-station for.')
     
     return parser.parse_args()
 
 # ==================
-def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_manifest_path, test_manifest_path, test_path, localhost_url, update_timeout:int=5):
+
+def run_capability_tests(moondream_server, models, image_url=DEFAULT_IMAGE_URL):
+    """Unified capability testing for any model list"""
+    if not models:
+        return True, []
+    
+    if isinstance(models, str):
+        models = [models]
+    
+    print(f"\nTesting capabilities for {len(models)} models...")
+    failed_models = []
+    
+    for model_name in models:
+        print(f"\nTesting {model_name}...")
+        
+        if not moondream_server.use_model(model_name):
+            print(f"  ❌ Failed to switch to model")
+            failed_models.append((model_name, ["model_switch"]))
+            continue
+        
+        cap_results = moondream_server.test_model_capabilities(model_name, image_url)
+        
+        if "error" in cap_results and not cap_results["error"]:
+            print(f"  ⏭️  Skipped (no expected responses)")
+        elif all(v for k,v in cap_results.items() if k != "error"):
+            print(f"  ✅ All capabilities passed")
+        else:
+            failed_tests = [k for k,v in cap_results.items() if not v]
+            print(f"  ❌ Failed: {', '.join(failed_tests)}")
+            failed_models.append((model_name, failed_tests))
+    
+    success = len(failed_models) == 0
+    return success, failed_models
+
+def test_bootstrap_hypervisor_cli_update(component, 
+                                         executable_path, 
+                                         base_manifest_path, 
+                                         test_manifest_path, 
+                                         test_path, 
+                                         localhost_url, 
+                                         system, 
+                                         with_capability:bool=False, 
+                                         update_timeout:int=5):
     base_manifest = Manifest(str(base_manifest_path))
     test_manifest = Manifest(str(test_manifest_path))
 
@@ -222,22 +209,16 @@ def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_ma
         print(f"{component} test skipped - no version change ({test_version})")
         return True 
 
-    test_url = getattr(test_manifest, f"current_{component}").url
-    tarball_path = test_url.split('/')[-1]
-
     component_manifest_path = test_path / f'{component}_update_manifest.json'
     
     generate_component_manifest(
         base_manifest_path=base_manifest_path,
         test_manifest_path=test_manifest_path,
         component=component,
-        version=test_version,
-        tarball_path=tarball_path,
-        serve_url=f"{localhost_url}/tarfiles",
         output_path=component_manifest_path
     )
 
-    build_base_version(str(base_manifest_path))
+    build_base_version(str(base_manifest_path), system=system)
     
     moondream = MoondreamServer(
         str(executable_path),
@@ -261,6 +242,12 @@ def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_ma
 
         assert final_versions[component] == test_version
         print(f"✅ {component} update successful!")
+        if with_capability:
+            model = moondream.get_current_model()
+            success, failed = run_capability_tests(moondream, model, DEFAULT_IMAGE_URL)
+            if not success:
+                print(f"⚠️ Capability test failed")
+                return False
         return True
 
     except Exception as e:
@@ -269,7 +256,13 @@ def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_ma
     finally:
         moondream.stop()
 
-def test_inference_update(executable_path, base_manifest_path, test_manifest_path, localhost_url, update_timeout: int = 5):
+def test_inference_update(executable_path, 
+                          base_manifest_path, 
+                          test_manifest_path, 
+                          localhost_url, 
+                          system,
+                          with_capability=False, 
+                          update_timeout: int = 5):
     base_manifest = Manifest(str(base_manifest_path))
     test_manifest = Manifest(str(test_manifest_path))
     
@@ -295,7 +288,7 @@ def test_inference_update(executable_path, base_manifest_path, test_manifest_pat
         print(f"ERROR: No models use inference {test_version}")
         return False
     
-    build_base_version(str(base_manifest_path))
+    build_base_version(str(base_manifest_path), system=system)
     
     moondream = MoondreamServer(
         str(executable_path),
@@ -336,6 +329,18 @@ def test_inference_update(executable_path, base_manifest_path, test_manifest_pat
         assert final_versions["inference"] == test_version
         
         print(f"✅ Inference update successful!")
+
+        if with_capability:
+            all_models = moondream.get_model_list()
+            success, failed_models = run_capability_tests(moondream, all_models, DEFAULT_IMAGE_URL)
+            
+            if not success:
+                print(f"\n⚠️ {len(failed_models)} models had issues:")
+                for model, tests in failed_models:
+                    print(f"  - {model}: {', '.join(tests)}")
+                return False
+            else:
+                print(f"\n✅ All {len(all_models)} models passed capability tests!")
         return True
         
     except Exception as e:
@@ -344,17 +349,70 @@ def test_inference_update(executable_path, base_manifest_path, test_manifest_pat
     finally:
         moondream.stop()
 
-def main():
-    # what to not reset each test:
-    # built tarballs - expensive to build each time.
-    # http server - only serves files
+def test_model_update(executable_path, 
+                      base_manifest_path, 
+                      test_manifest_path, 
+                      test_path, 
+                      localhost_url, 
+                      system,
+                      update_timeout: int = 5):
 
-    # what to reset:
-    # manifests per test
-    # moondream server base build
-    # the moondream server instance
-    # server should start from base manifest each time
+    # Generate model update manifest
+    model_manifest_path = test_path / 'model_update_manifest.json'
+    generate_component_manifest(
+        base_manifest_path=base_manifest_path,
+        test_manifest_path=test_manifest_path,
+        component="model",
+        output_path=model_manifest_path
+    )
     
+    build_base_version(str(base_manifest_path), system=system)
+    
+    moondream = MoondreamServer(
+        str(executable_path),
+        base_manifest_url=f"{localhost_url}/base_manifest.json",
+        update_manifest_url=f"{localhost_url}/model_update_manifest.json"
+    )
+    
+    try:
+        moondream.start(use_update_manifest=False)
+        
+        initial_models = moondream.get_model_list()
+        print(f"Initial: {len(initial_models)} models")
+        
+        moondream.restart(use_update_manifest=True)
+        
+        has_updates = moondream.check_updates("model")
+        assert has_updates, "No model updates detected!"
+        
+        moondream.update_component("model")
+        time.sleep(update_timeout)
+        
+        moondream.start(use_update_manifest=True)
+        
+        updated_models = moondream.get_model_list()
+        print(f"Updated: {len(updated_models)} models")
+        
+            # we always test all models with capabilities
+        success, failed_models = run_capability_tests(moondream, updated_models, DEFAULT_IMAGE_URL)
+        
+        # Summary
+        if not success:
+            print(f"\n❌ Model update failed: {len(failed_models)}/{len(updated_models)} models had issues:")
+            for model, tests in failed_models:
+                print(f"  - {model}: {', '.join(tests)}")
+            return False
+        else:
+            print(f"\n✅ Model update successful! All {len(updated_models)} models passed.")
+            return True
+        
+    except Exception as e:
+        print(f"❌ Model test failed: {e}")
+        return False
+    finally:
+        moondream.stop()
+
+def main():
     args = parse_arguments()
     valid_components = ["inference","bootstrap", "hypervisor", "model", "cli"]
     
@@ -369,8 +427,7 @@ def main():
         test_components = valid_components
 
     test_path = Path(__file__).parent / TEST_FOLDER
-    parent_dir = Path(__file__).parent.parent
-    executable_path = parent_dir / 'output/moondream_station/moondream_station'
+    executable_path = REPO_DIR / 'output/moondream_station/moondream_station'
     localhost_port = args.port
     localhost_url = f"http://localhost:{localhost_port}"
     
@@ -400,13 +457,15 @@ def main():
         print(f"\nBuilding base tarfiles")
         base_copied = create_and_copy_tarball(
             components=base_versions,
-            test_folder=test_path
+            test_folder=test_path,
+            system=args.system
         )
         
         print(f"\nBuilding test tarfiles")
         test_copied = create_and_copy_tarball(
             components=test_versions,
-            test_folder=test_path
+            test_folder=test_path,
+            system=args.system
         )
         
         # Update manifest URLs to point to local tarfiles
@@ -430,14 +489,22 @@ def main():
     for component in test_components:
         print(f"\n--- Testing {component} update ---")
         if component == "model":
-            print(f"\n--- Model testing not yet implemented ---")
-            continue
+            test_model_update(
+                executable_path=executable_path,
+                base_manifest_path=base_manifest_path,
+                test_manifest_path=test_manifest_path,
+                test_path=test_path,
+                localhost_url=localhost_url,
+                system=args.system
+            )
         elif component == "inference":
             test_inference_update(
                 executable_path=executable_path,
                 base_manifest_path=base_manifest_path,
                 test_manifest_path=test_manifest_path,
-                localhost_url=localhost_url
+                localhost_url=localhost_url,
+                system=args.system,
+                with_capability=args.with_capability
             )
         else:
             test_bootstrap_hypervisor_cli_update(
@@ -446,13 +513,13 @@ def main():
                 base_manifest_path=base_manifest_path,
                 test_manifest_path=test_manifest_path,
                 test_path=test_path,
-                localhost_url=localhost_url
+                localhost_url=localhost_url,
+                system=args.system,
+                with_capability=args.with_capability
             )
     
     print(f"\n============ Stopping HTTP Server ================")
     server.shutdown() #TODO: Make it so if anything happens, server shuts down!
-    
-
     
 if __name__ == "__main__":
     main()

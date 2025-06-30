@@ -1,5 +1,6 @@
 import json
 import requests
+from pathlib import Path
 from dataclasses import dataclass
 
 @dataclass
@@ -79,3 +80,53 @@ class Manifest:
         """Save manifest to file."""
         with open(path, 'w') as f:
             json.dump(self.to_dict(), f, indent=2)
+
+def generate_component_manifest(
+    base_manifest_path: Path,
+    test_manifest_path: Path,  # Add this parameter
+    component: str,
+    output_path: Path
+) -> Path:
+    """Generate manifest with update for single component only."""
+    manifest = Manifest(str(base_manifest_path))
+    test_manifest = Manifest(str(test_manifest_path))
+    
+    if component == "model":
+        # For model testing, use inference clients from test manifest
+        manifest.inference_clients = test_manifest.inference_clients
+        manifest.models = test_manifest.models
+    else:
+        test_component = getattr(test_manifest, f"current_{component}")
+        current_component = getattr(manifest, f"current_{component}")
+        current_component.version = test_component.version
+        current_component.url = test_component.url
+    
+    manifest.save(str(output_path))
+    return output_path
+
+def extract_versions_from_manifest(manifest: Manifest) -> dict[str, str]:
+    """Extract component versions from a manifest."""
+    versions = {
+        "bootstrap": manifest.current_bootstrap.version,
+        "cli": manifest.current_cli.version,
+        "hypervisor": manifest.current_hypervisor.version,
+    }
+    # For inference, get the first/latest version
+    if manifest.inference_clients:
+        versions["inference"] = list(manifest.inference_clients.keys())[0]
+    return versions
+
+def update_manifest_urls(manifest: Manifest, tarball_info: dict, serve_url: str) -> None:
+    """Update manifest URLs to point to local tarfiles."""
+    for component, info in tarball_info.items():
+        version = info["version"]
+        tarball_name = Path(info["path"]).name
+        url = f"{serve_url}/tarfiles/{tarball_name}"
+        
+        if component == "inference":
+            if version in manifest.inference_clients:
+                manifest.inference_clients[version].url = url
+        else:
+            current_component = getattr(manifest, f"current_{component}")
+            if current_component.version == version:
+                current_component.url = url
