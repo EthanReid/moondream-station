@@ -124,8 +124,14 @@ def update_manifest_urls(manifest: Manifest, tarball_info: dict, serve_url: str)
         url = f"{serve_url}/tarfiles/{tarball_name}"
         
         if component == "inference":
-            if version in manifest.inference_clients:
-                manifest.inference_clients[version].url = url
+            # Update ALL inference clients to use local URLs
+            for inf_version in manifest.inference_clients.keys():
+                # Construct expected tarball name for this version
+                expected_tarball = f"inference_bootstrap_{inf_version}.tar.gz"
+                expected_url = f"{serve_url}/tarfiles/{expected_tarball}"
+                # Check if this tarball exists locally
+                if (Path(info["path"]).parent / expected_tarball).exists():
+                    manifest.inference_clients[inf_version].url = expected_url
         else:
             current_component = getattr(manifest, f"current_{component}")
             if current_component.version == version:

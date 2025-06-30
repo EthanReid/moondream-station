@@ -39,3 +39,7 @@ python test_update.py --base-manifest base.json --test-manifest test.json --test
 - ✅ Success: Component updated correctly
 - ❌ Failure: Update failed with error details
 - ⏭️ Skipped: No version change detected
+
+## Notes
+- When running the tests, make sure that at least one of the models support the latest inference client in the manifest.
+- When adding an inference client to the test manifest, please make sure that the original inference client(s) in the base manifest are also supported.
