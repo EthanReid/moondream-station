@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # Parse args
 CLEAN=false
 HYPERVISOR_VERSION=""
@@ -22,14 +23,17 @@ for arg in "$@"; do
         *) ARGS+=("$arg") ;;
     esac
 done
+
 TYPE=${ARGS[0]:-}
 PLATFORM=${ARGS[1]:-ubuntu}
+
 # Special handling for 'run' command
 if [[ "$TYPE" == "run" ]]; then
     EXTRA_ARGS=("${ARGS[@]:1}")
 else
     EXTRA_ARGS=("${ARGS[@]:2}")
 fi
+
 if $CLEAN; then
     echo "Cleaning output and dev directories..."
     rm -rf ../output
@@ -39,7 +43,9 @@ if $CLEAN; then
         rm -rf "$HOME/.local/share/MoondreamStation"
     fi
 fi
+
 set -euo pipefail
+
 ##############################################################################
 # Helper function to create info.json
 ##############################################################################
@@ -57,6 +63,7 @@ create_info_json() {
 }
 EOF
 }
+
 ##############################################################################
 # builders
 ##############################################################################
@@ -68,6 +75,7 @@ build_inference() {
     local BOOTSTRAP="../app/inference_client/bootstrap.py"
     local SRC_DIR="../app/inference_client"
     local FILES=(main.py model_service.py requirements.txt)
+
     local LIBPYTHON
     LIBPYTHON=$(
 python - <<'PY'
@@ -86,15 +94,19 @@ else:
     sys.exit(1)
 PY
 ) || exit 1
+
     PYI_ARGS="--onefile" 
+
     echo "Building 'inference'..."
     rm -rf "$DIST_DIR"; mkdir -p "$DIST_DIR"
+
     # Only create info.json and add to build if version was specified
     local ADD_DATA_ARG=""
     if [[ -n "$VERSION" ]]; then
         create_info_json "$VERSION" "inference"
         ADD_DATA_ARG="--add-data info.json:."
     fi
+
     pyinstaller $PYI_ARGS \
         --hidden-import=urllib.request \
         --hidden-import=zipfile \
@@ -104,6 +116,7 @@ PY
         --clean \
         --distpath "$DIST_DIR" \
         "$BOOTSTRAP"
+
     for f in "${FILES[@]}"; do
         cp "$SRC_DIR/$f" "$DIST_DIR"
     done
@@ -116,8 +129,10 @@ PY
     
     echo "✔ inference $VERSION → $DIST_DIR"
 }
+
 build_hypervisor() {
     local PYI_ARGS
+
     if [[ "$PLATFORM" = "mac" ]]; then
         # macOS always embeds Python.framework for us
         PYI_ARGS="--windowed"
@@ -141,11 +156,13 @@ else:
     sys.exit(1)
 PY
 ) || exit 1
+
         PYI_ARGS="--onefile"
     else
         echo "Unknown platform '$PLATFORM' (mac|ubuntu)" >&2
         exit 1
     fi
+
     local NAME="moondream_station"
     local DIST_DIR="../output/moondream_station"
     local SUP_DIR="../output/moondream-station-files"
@@ -156,6 +173,7 @@ PY
         manifest.py config.py misc.py update_bootstrap.sh clivisor.py
         display_utils.py
     )
+
     echo "Building 'hypervisor' for $PLATFORM..."
     rm -rf "$DIST_DIR" "$SUP_DIR"; mkdir -p "$DIST_DIR" "$SUP_DIR"
     
@@ -197,11 +215,13 @@ PY
     
     echo "✔ hypervisor (bootstrap: $BOOTSTRAP_VERSION, components: $HYPERVISOR_VERSION) → $DIST_DIR"
 }
+
 build_cli() {
     local VERSION="$CLI_VERSION"
     local NAME="moondream-cli"
     local DIST_DIR="../output/moondream-cli"
     local SRC_DIR="../app/moondream_cli"
+
     echo "Building 'cli'..."
     rm -rf "$DIST_DIR"; mkdir -p "$DIST_DIR"
     
@@ -219,6 +239,7 @@ build_cli() {
     
     echo "✔ cli $VERSION → $DIST_DIR"
 }
+
 ##############################################################################
 # dev sandbox
 ##############################################################################
@@ -229,6 +250,7 @@ prepare_dev() {
     build_cli
     build_inference
     build_hypervisor
+
     local DEV_DIR
     if [[ "$PLATFORM" = "mac" ]]; then
         DEV_DIR="$HOME/Library/MoondreamStation"
@@ -240,6 +262,7 @@ prepare_dev() {
     # For inference directory, use specified version or default
     local INFERENCE_VERSION="${INFERENCE_VERSION:-v0.0.1}"
     mkdir -p "$DEV_DIR/inference/$INFERENCE_VERSION"
+
     # copy hypervisor supplements
     local HYP_SRC="../output/moondream-station-files"
     local HYP_FILES=(
@@ -255,12 +278,16 @@ prepare_dev() {
     if [[ -f "$HYP_SRC/info.json" ]]; then
         cp "$HYP_SRC/info.json" "$DEV_DIR/"
     fi
+
     # copy CLI dir
     cp -r "../output/moondream-cli/moondream_cli" "$DEV_DIR/"
+
     # copy inference build to versioned directory
     cp -r "../output/inference_bootstrap" "$DEV_DIR/inference/$INFERENCE_VERSION/"
+
     echo "✔ dev sandbox ready → $DEV_DIR"
 }
+
 ##############################################################################
 # execution
 ##############################################################################
