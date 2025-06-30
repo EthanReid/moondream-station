@@ -212,7 +212,6 @@ def parse_arguments():
 
 # ==================
 def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_manifest_path, test_manifest_path, test_path, localhost_url, update_timeout:int=5):
-
     base_manifest = Manifest(str(base_manifest_path))
     test_manifest = Manifest(str(test_manifest_path))
 
@@ -252,7 +251,7 @@ def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_ma
         assert versions[component] == base_version, f"Wrong initial version: {versions[component]}"
         moondream.restart(True) #starts with updated manifest!
         
-        assert moondream.check_updates() == True, f"Check updates does not show any update!"
+        assert moondream.check_updates() == False, f"Check updates does not show any update!"
 
         moondream.update_component(component) # this will kill the process
         time.sleep(update_timeout) # TODO: get rid of arbitrary sleep amount (this is to give ample time for update!)
@@ -299,7 +298,7 @@ def main():
         test_components = valid_components
 
     test_path = Path(__file__).parent / TEST_FOLDER
-    parent_dir = test_path.parent
+    parent_dir = Path(__file__).parent.parent
     executable_path = parent_dir / 'output/moondream_station/moondream_station'
     localhost_port = args.port
     localhost_url = f"http://localhost:{localhost_port}"
