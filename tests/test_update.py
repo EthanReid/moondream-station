@@ -202,7 +202,7 @@ def parse_arguments():
     parser.add_argument("--test-manifest", type=str, required=True,
                        help="Path to test manifest JSON file")
     parser.add_argument("--test", type=str, required=False,
-                       help='JSON list of components to test, e.g. \'["bootstrap", "hypervisor", "cli", "inference"]\'')
+                       help='Comma-separated list of components to test, e.g. "bootstrap,hypervisor,cli,inference"')
     parser.add_argument("--preserve-tarfile-links", action="store_true",
                        help="Use existing tarfile URLs from manifests instead of building new ones")
     parser.add_argument("--port", type=int, default=8000,
@@ -269,6 +269,81 @@ def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_ma
     finally:
         moondream.stop()
 
+def test_inference_update(executable_path, base_manifest_path, test_manifest_path, localhost_url, update_timeout: int = 5):
+    base_manifest = Manifest(str(base_manifest_path))
+    test_manifest = Manifest(str(test_manifest_path))
+    
+    # Get inference versions
+    base_version = list(base_manifest.inference_clients.keys())[0]
+    test_version = list(test_manifest.inference_clients.keys())[0]
+    
+    if test_version == base_version:
+        print(f"Inference test skipped - no version change ({test_version})")
+        return True
+    
+    # Get all models from test manifest
+    all_models = []
+    for category, models in test_manifest.models.items():
+        for model_name, model_info in models.items():
+            all_models.append((category, model_name, model_info.get("inference_client")))
+    
+    # Find model with new inference version
+    model_with_new_version = next(((cat, name) for cat, name, inf in all_models 
+                                   if inf == test_version), None)
+    
+    if not model_with_new_version:
+        print(f"ERROR: No models use inference {test_version}")
+        return False
+    
+    build_base_version(str(base_manifest_path))
+    
+    moondream = MoondreamServer(
+        str(executable_path),
+        base_manifest_url=f"{localhost_url}/base_manifest.json",
+        update_manifest_url=f"{localhost_url}/test_manifest.json"
+    )
+    
+    try:
+        # Start with test manifest
+        moondream.start(use_update_manifest=True)
+        
+        # Get current model
+        current_model = moondream.get_current_model()
+        
+        target_category, target_model = model_with_new_version
+        
+        # If already on target model, switch away and back
+        if current_model == target_model:
+            # Pick any other model from our list
+            other_model = next(((cat, name) for cat, name, _ in all_models 
+                               if name != target_model), None)
+            if not other_model:
+                print("ERROR: Need at least 2 models to test")
+                return False
+            
+            print(f"Switching to {other_model[1]} then back to {target_model}...")
+            moondream.use_model(other_model[1])
+            time.sleep(2)
+            moondream.use_model(target_model)
+        else:
+            print(f"Switching to {target_model} with inference {test_version}...")
+            moondream.use_model(target_model)
+        
+        time.sleep(update_timeout)
+        
+        # Verify inference version changed
+        final_versions = moondream.get_versions()
+        assert final_versions["inference"] == test_version
+        
+        print(f"✅ Inference update successful!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Inference test failed: {e}")
+        return False
+    finally:
+        moondream.stop()
+
 def main():
     # what to not reset each test:
     # built tarballs - expensive to build each time.
@@ -281,18 +356,14 @@ def main():
     # server should start from base manifest each time
     
     args = parse_arguments()
-    valid_components = ["bootstrap", "hypervisor", "model", "cli", "inference"]
-
+    valid_components = ["inference","bootstrap", "hypervisor", "model", "cli"]
+    
     if args.test:
-        try:
-            test_components = json.loads(args.test)
-            invalid = [c for c in test_components if c not in valid_components] # TODO: simplify by using sets
-            if invalid:
-                print(f"ERROR: Invalid components specified: {invalid}")
-                print(f"Valid components are: {valid_components}")
-                return
-        except json.JSONDecodeError:
-            print(f"ERROR: Invalid JSON for --test argument: {args.test}")
+        test_components = [c.strip() for c in args.test.split(",")]
+        invalid = [c for c in test_components if c not in valid_components]
+        if invalid:
+            print(f"ERROR: Invalid components specified: {invalid}")
+            print(f"Valid components are: {valid_components}")
             return
     else:
         test_components = valid_components
@@ -362,16 +433,21 @@ def main():
             print(f"\n--- Model testing not yet implemented ---")
             continue
         elif component == "inference":
-            print(f"\n--- Inference testing not yet implemented ---")
-            continue
-        test_bootstrap_hypervisor_cli_update(
-            component=component,
-            executable_path=executable_path,
-            base_manifest_path=base_manifest_path,
-            test_manifest_path=test_manifest_path,
-            test_path=test_path,
-            localhost_url=localhost_url
-        )
+            test_inference_update(
+                executable_path=executable_path,
+                base_manifest_path=base_manifest_path,
+                test_manifest_path=test_manifest_path,
+                localhost_url=localhost_url
+            )
+        else:
+            test_bootstrap_hypervisor_cli_update(
+                component=component,
+                executable_path=executable_path,
+                base_manifest_path=base_manifest_path,
+                test_manifest_path=test_manifest_path,
+                test_path=test_path,
+                localhost_url=localhost_url
+            )
     
     print(f"\n============ Stopping HTTP Server ================")
     server.shutdown() #TODO: Make it so if anything happens, server shuts down!
