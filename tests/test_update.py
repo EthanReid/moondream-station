@@ -370,46 +370,50 @@ def main():
     test_manifest.save(str(test_manifest_path))
 
     # Start HTTP server at port
+    server = None
     print(f"\n============ Starting HTTP Server ================")
-    server = serve_test_files(test_folder=test_path, port=localhost_port)
+    try:
+        server = serve_test_files(test_folder=test_path, port=localhost_port)
 
-    print(f"\n============ Running Component Tests ================")
+        print(f"\n============ Running Component Tests ================")
+        
+        # Only test the specified components
+        for component in test_components:
+            print(f"\n--- Testing {component} update ---")
+            if component == "model":
+                test_model_update(
+                    executable_path=executable_path,
+                    base_manifest_path=base_manifest_path,
+                    test_manifest_path=test_manifest_path,
+                    test_path=test_path,
+                    localhost_url=localhost_url,
+                    system=args.system
+                )
+            elif component == "inference":
+                test_inference_update(
+                    executable_path=executable_path,
+                    base_manifest_path=base_manifest_path,
+                    test_manifest_path=test_manifest_path,
+                    localhost_url=localhost_url,
+                    system=args.system,
+                    with_capability=args.with_capability
+                )
+            else:
+                test_bootstrap_hypervisor_cli_update(
+                    component=component,
+                    executable_path=executable_path,
+                    base_manifest_path=base_manifest_path,
+                    test_manifest_path=test_manifest_path,
+                    test_path=test_path,
+                    localhost_url=localhost_url,
+                    system=args.system,
+                    with_capability=args.with_capability
+                )
     
-    # Only test the specified components
-    for component in test_components:
-        print(f"\n--- Testing {component} update ---")
-        if component == "model":
-            test_model_update(
-                executable_path=executable_path,
-                base_manifest_path=base_manifest_path,
-                test_manifest_path=test_manifest_path,
-                test_path=test_path,
-                localhost_url=localhost_url,
-                system=args.system
-            )
-        elif component == "inference":
-            test_inference_update(
-                executable_path=executable_path,
-                base_manifest_path=base_manifest_path,
-                test_manifest_path=test_manifest_path,
-                localhost_url=localhost_url,
-                system=args.system,
-                with_capability=args.with_capability
-            )
-        else:
-            test_bootstrap_hypervisor_cli_update(
-                component=component,
-                executable_path=executable_path,
-                base_manifest_path=base_manifest_path,
-                test_manifest_path=test_manifest_path,
-                test_path=test_path,
-                localhost_url=localhost_url,
-                system=args.system,
-                with_capability=args.with_capability
-            )
-    
-    print(f"\n============ Stopping HTTP Server ================")
-    server.shutdown() #TODO: Make it so if anything happens, server shuts down! (add proper server cleanup? P2)
+    finally:
+        print(f"\n============ Stopping HTTP Server ================")
+        if server:
+            server.shutdown()
     
 if __name__ == "__main__":
     main()
