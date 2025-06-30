@@ -300,13 +300,10 @@ def get_versions_from_args(args, components: list[str], test_path: str):
     return base_versions, test_versions
 
 # ==================
-def test_bootstrap_update(executable_path, base_manifest_path, test_path, test_versions, test_copied, localhost_url):
-    # rebuild base version
-    build_base_version(str(base_manifest_path))
-    component = 'bootstrap'
+def test_bootstrap_hypervisor_cli_update(component:str, executable_path, base_manifest_path, test_path, test_versions, test_copied, localhost_url, update_timeout:int=5):
 
     base_manifest = Manifest(str(base_manifest_path))
-    bootstrap_manifest_path = test_path / 'bootstrap_update_manifest.json'
+    component_manifest_path = test_path / f'{component}_update_manifest.json'
     
 
     generate_component_manifest(
@@ -315,37 +312,41 @@ def test_bootstrap_update(executable_path, base_manifest_path, test_path, test_v
         version=test_versions[component],
         tarball_path=test_copied[component]["path"],
         serve_url=f"{localhost_url}/tarfiles",
-        output_path=bootstrap_manifest_path
+        output_path=component_manifest_path
     )
 
-    bootstrap_manifest = Manifest(str(bootstrap_manifest_path))
+    component_manifest = Manifest(str(component_manifest_path))
+
+    component_version = getattr(component_manifest, f"current_{component}").version
+    base_version = getattr(base_manifest, f"current_{component}").version
+
+    if component_version == base_version:
+        print(f"{component} test skipped - no version change ({component_version})")
+        return True 
+
+    build_base_version(str(base_manifest_path))
     
     moondream = MoondreamServer(
         str(executable_path),
         base_manifest_url=f"{localhost_url}/base_manifest.json",
-        update_manifest_url=f"{localhost_url}/bootstrap_update_manifest.json"
+        update_manifest_url=f"{localhost_url}/{component}_update_manifest.json"
     )
-
-    if bootstrap_manifest.current_bootstrap.version == base_manifest.current_bootstrap.version:
-        print(f"Bootstrap test skipped - no version change ({base_manifest.current_bootstrap.version})")
-        return True 
-        
 
     try:
         moondream.start(use_update_manifest=False)
         versions = moondream.get_versions()
-        assert versions[component] == base_manifest.current_bootstrap.version, f"Wrong initial version: {versions[component]}"
+        assert versions[component] == component_version, f"Wrong initial version: {versions[component]}"
         moondream.restart(True) #starts with updated manifest!
         
         assert moondream.check_updates() == True, f"Check updates does not show any update!"
 
-        moondream.update_component("bootstrap") # this will kill the process
-        time.sleep(10) # TODO: get rid of arbitrary sleep amount (this is to give ample time for update!)
+        moondream.update_component(component) # this will kill the process
+        time.sleep(update_timeout) # TODO: get rid of arbitrary sleep amount (this is to give ample time for update!)
 
         moondream.start(use_update_manifest=True)
         final_versions = moondream.get_versions()
 
-        assert final_versions[component] == bootstrap_manifest.current_bootstrap.version
+        assert final_versions[component] == component_version
         print("✅ Bootstrap update successful!")
         return True
 
@@ -354,7 +355,6 @@ def test_bootstrap_update(executable_path, base_manifest_path, test_path, test_v
         return False
     finally:
         moondream.stop()
-
 
 def main():
 
